@@ -1,146 +1,115 @@
 <div align="center">
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="apps/web/public/images/logo-dark-light.svg">
-  <img src="apps/web/public/images/logo-full-light.svg" alt="Alloomi Logo">
+  <img src="apps/web/public/images/logo-full-light.svg" alt="Alloomi Logo" width="400">
 </picture>
 
-</br>
-</br>
+<br>
 
-[![Node.js Version](https://img.shields.io/badge/Node.js-22+-339933?logo=node.js&logoColor=white)](https://nodejs.org) [![Tauri](https://img.shields.io/badge/Tauri-Desktop-24C8D5?logo=tauri)](https://tauri.app) [![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-4B4B4B?logo=linux&logoColor=white)](https://alloomi.ai) [![License](https://img.shields.io/badge/License-Apache%202.0-F8D52A?logo=apache)](https://www.apache.org/licenses/LICENSE-2.0) [![Discord](https://img.shields.io/badge/Discord-Join-5865F2?logo=discord&logoColor=white)](https://discord.com/invite/xkJaJyWcsv) [![X](https://img.shields.io/badge/X-Follow-000000?logo=x&logoColor=white)](https://x.com/AlloomiAI)
+**Your AI Mates that Remembers All Work Details.**
 
-#### _Proactive AI workspace — understands your intent, orchestrates execution, and gets things done._
+<br>
 
-  <a href="https://github.com/melandlabs/release">
-    <img src="https://img.shields.io/github/v/tag/melandlabs/release?logo=github&label=Download&color=24C8D5" alt="Download" height="30" style="transform:scale(1);">
-  </a>
+[![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-4B4B4B?logo=linux&logoColor=white)](https://alloomi.ai) 
+[![License](https://img.shields.io/badge/License-Apache%202.0-F8D52A?logo=apache)](https://www.apache.org/licenses/LICENSE-2.0)
+[![Discord](https://img.shields.io/badge/Discord-Join-5865F2?logo=discord&logoColor=white)](https://discord.com/invite/xkJaJyWcsv)
+[![X](https://img.shields.io/badge/X-Follow-000000?logo=x&logoColor=white)](https://x.com/AlloomiAI)
+
 </div>
 
-Alloomi is a **proactive AI workspace** that monitors business signals, orchestrates tasks autonomously, and tracks and validates results end-to-end. Unlike traditional AI assistants that are passive workflow tools, Alloomi acts as a **proactive AI workspace** that watches, learns, remembers, and acts on your behalf.
+---
 
-## What Problems Does Alloomi Solve?
+## What is Alloomi?
 
-| The Problem                                                                                                                                                              | Why It Happens                                                                               | How Alloomi Fixes It                                                                                                                                                                     | The Benefit                                                           |
-| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
-| **Context Loss** — AI forgets everything between sessions, forcing you to re-explain background, preferences, and style every time                                       | Most agents live in chat windows with no persistent memory across tools and files            | **Persistent memory that gets smarter the more you use it** — your AI learns your habits, remembers decisions, and carries context across months                                         | Never re-explain context again; AI remembers everything across months |
-| **Prompt Fatigue** — The "Prompt Era" demands you externalize every preference into words, manually maintaining "project briefs" and pasting them into every new session | Without internal memory, the burden of context-setting falls entirely on the user            | **Internalized preferences** — Alloomi's memory engine observes your editing patterns, decisions, and work style to build a persistent model of you, eliminating repetitive explanations | Stop writing repetitive prompts; AI learns your style automatically   |
-| **Tool Fragmentation** — AI tools scattered across tabs (ChatGPT, Claude, Notion, Slack) require constant copy-pasting between platforms                                 | One-stop workspaces often just mash tools together without true integration                  | **Truly unified workspace** — Alloomi orchestrates across messaging, email, calendar, and documents in one place with shared context, not just tabs                                      | One workspace, all tools, shared context                              |
-| **Trust Gap** — AI agents take high-stakes actions without visibility, leaving users uncomfortable with autonomous execution                                             | Automation without feedback mechanisms creates anxiety around critical tasks                 | **Human-in-the-loop controls** — configurable approval gates for high-risk actions; Alloomi alerts you proactively before issues escalate so you're always in control                    | Stay in control; AI acts autonomously but you approve risky actions   |
-| **Platform Overload** — Testing and switching between dozens of AI agent platforms (n8n, Gumloop, Lindy, Manus...) creates decision fatigue                              | The AI agent market is fragmented with no clear winner; each tool has its own learning curve | **All-in-one solution** — skip the endless evaluation cycle. Alloomi combines monitoring, orchestration, memory, and execution in a single desktop app without subscription lock-in      | Skip the evaluation cycle; everything you need in one app             |
+Alloomi is an open-source AI workspace that runs on your desktop. It connects to the tools you already use — messaging apps, email, calendar, documents, project trackers — and builds a working memory of your people, projects, and decisions.
 
-## Daily Friction We're Eliminating
+### Download to Try
+ <a href="https://github.com/melandlabs/release">
+    <img src="https://img.shields.io/github/v/tag/melandlabs/release?logo=github&label=Download&color=24C8D5" alt="Download" height="30" style="transform:scale(1);">
+  </a>
 
-| Without Alloomi                                       | With Alloomi                                       |
-| ----------------------------------------------------- | -------------------------------------------------- |
-| Switching between WeChat, Telegram, WhatsApp to reply | **One interface, reply to all**                    |
-| Manually check Slack, Email, Calendar for updates     | **AI proactively alerts you**                      |
-| Repetitive tasks done manually every day              | **Set scheduled tasks, AI executes automatically** |
-| Forget context after months                           | **Long-term memory that remembers everything**     |
+
+
+## Features
+
+| | Capability | What it does |
+|---|---|---|
+| 🔌 | **18 Platform Connectors** | Telegram, WhatsApp, WeChat, DingTalk, Feishu, Gmail, Google Calendar, Outlook, Google Docs, X/Twitter, Instagram, LinkedIn, Facebook Messenger, Jira, HubSpot, Asana, iMessage, QQ, RSS — messages, emails, calendar events, documents, and project updates flow in continuously |
+| 🧠 | **Working Memory** | Short → mid → long-term memory with a progressive forgetting engine — scores by access frequency, recency, and importance, summarizes and archives over time, recalls context from months ago |
+| 📄 | **Document Skills** | Create and edit DOCX, XLSX, PPTX, PDF — with formulas, formatting, tracked changes, OCR, and merge/split |
+| ⏰ | **Automation** | Scheduled jobs with cron expressions, intervals, or one-time triggers — agent-driven execution with timeout recovery and history |
+| 🖥️ | **Desktop App** | Native app for Windows, macOS, Linux via Tauri — local-first storage with IndexedDB + SQLite, AES-256 encryption, no data leaves your machine |
+
+<p align="center">
+  <img src="screenshots/components.png" alt="Architecture" width="100%">
+</p>
+
 
 ## Quick Start
 
-### Run from Source
-
 ```bash
-# 1. Clone the repo
-git clone https://github.com/melandlabs/alloomi
+git clone https://github.com/melandlabs/alloomi.git
 cd alloomi
 
-# 2. Copy environment config
 cp apps/web/.env.example apps/web/.env
 
-# 3. Generate keys
-openssl rand -base64 32  # AUTH_SECRET
-node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"  # ENCRYPTION_KEY
+# Set your AI provider keys in .env:
+#   ANTHROPIC_API_KEY=sk-ant-...
+#   LLM_API_KEY=sk-...
 
-# 4. Configure AI API
-ANTHROPIC_BASE_URL=https://api.anthropic.com
-ANTHROPIC_API_KEY=sk-ant-...
-ANTHROPIC_MODEL=claude-sonnet-4-6
-
-LLM_BASE_URL=https://api.openai.com/v1
-LLM_API_KEY=sk-...
-LLM_MODEL=gpt-4o
-
-# 5. Start
 pnpm install
 pnpm tauri:dev
 ```
 
+Requires Node.js 22+ and pnpm 9+.
+
+## Project Structure
+
+```
+alloomi/
+├── apps/web/          # Desktop app (Tauri + Next.js)
+├── packages/
+│   ├── ai/            # Agent, memory, RAG, model routing
+│   ├── integrations/  # 18 platform connectors
+│   ├── insights/      # EventRank scoring, focus classification
+│   ├── agent/         # Multi-provider agent SDK
+│   ├── storage/       # Local + cloud storage
+│   └── search/        # Brave Search integration
+└── skills/            # PDF, DOCX, XLSX, PPTX, browser automation, web search
+```
+
 ## Screenshots
 
-<table align="center">
+<table>
 <tr>
-<td><img src="screenshots/app/docx.gif" alt="Docx" style="border:1px solid #ddd; border-radius:8px;"></td>
-<td><img src="screenshots/app/excel.gif" alt="Excel" style="border:1px solid #ddd; border-radius:8px;"></td>
+<td><img src="screenshots/app/docx.gif" alt="Document preview" width="100%"></td>
+<td><img src="screenshots/app/excel.gif" alt="Spreadsheet preview" width="100%"></td>
 </tr>
 <tr>
-<td colspan="2" align="center">Document Previews (Docx, Excel)</td>
-</tr>
-<tr>
-<td><img src="screenshots/app/website.gif" alt="Website Generation" style="border:1px solid #ddd; border-radius:8px;"></td>
-<td><img src="screenshots/app/connectors.gif" alt="Connectors" style="border:1px solid #ddd; border-radius:8px;"></td>
-</tr>
-<tr>
-<td align="center">Website Generation</td>
-<td align="center">Multiple Connectors</td>
-</tr>
-<tr>
-<td><img src="screenshots/app/automation.gif" alt="Automation" style="border:1px solid #ddd; border-radius:8px;"></td>
-<td><img src="screenshots/app/library.gif" alt="Library" style="border:1px solid #ddd; border-radius:8px;"></td>
-</tr>
-<tr>
-<td align="center">Automation & Cron Jobs</td>
-<td align="center">Library Gallery</td>
+<td><img src="screenshots/app/automation.gif" alt="Automation" width="100%"></td>
+<td><img src="screenshots/app/connectors.gif" alt="Connectors" width="100%"></td>
 </tr>
 </table>
 
-> More demos and show cases can be found [here](https://github.com/melandlabs/alloomi/wiki/Use-Case:-Engineering-Daily-Sync)
+## Security
 
-## Features
+- Local-first: data stored on your machine via IndexedDB + SQLite
+- AES-256 encryption for stored data
+- No training on your data — ever
+- Hardware-isolated processing, no public gateways
 
-### Proactive Awareness
+## Feedback
 
-- **📡 Signal Monitoring** — monitors signals across Slack, Email, Calendar, Documents and alerts you proactively before issues escalate
-- **🧠 Long-Term Memory** — persistent knowledge graphs of people, projects, and decisions; remembers context even months later
-- **🎯 95% Noise Filtering** — hundreds of daily messages refined into one focused panel; tells you what you should act on
-- **⚡ Autonomous Execution** — drafts replies, schedules meetings, generates reports, tracks and validates results end-to-end; supports **scheduled tasks** (cron-like recurring jobs) and **proactively triggered tasks** (event-driven actions based on signals from Slack, Email, Calendar, etc.)
+This is early-stage software. We're looking for people who'll actually install it, connect their tools, and tell us what's broken.
 
-### Instant Preview
+- [GitHub Issues](https://github.com/melandlabs/alloomi/issues) — bugs, install problems, feature requests
+- [Discord](https://discord.com/invite/xkJaJyWcsv) — discussion, questions, help
+- [Email](mailto:developer@alloomi.ai) — anything else
 
-- **Documents** — Docx, DOC, ODT, RTF
-- **Spreadsheets** — Xlsx, XLS, CSV, ODS
-- **Presentations** — PPTx, PPT, ODP
-- **PDF** — PDF files with full rendering
-- **Images** — JPG, PNG, GIF, SVG, WebP, BMP
-- **Code** — Syntax-highlighted preview for JS, TS, Python, Go, Rust, and 20+ languages and HTML preview with live rendering
+## Contributing
 
-### Multi-Platform Access
-
-- **Messaging Apps** — Telegram, WhatsApp, iMessage, QQ, Feishu, Weixin, Dingtalk integrations with message fetching, sending, file attachments, and real-time sync
-- **Desktop Apps** — Native apps for Windows, macOS, and Linux with keyboard shortcuts and system tray
-
-### Enterprise-Grade Security
-
-- AES-256 end-to-end encryption
-- Hardware-isolated processing environments (no public gateways)
-- Zero training commitments — your data never trains public AI models
-- Local-first architecture
-
-## Technical Architecture
-
-<img src="screenshots/components.png" alt="Components" style="width:100%; border:1px solid #ddd; border-radius:8px;">
-
-> 📖 [Learn more about architecture here](https://github.com/melandlabs/alloomi/wiki/1.What-is-Alloomi)
-
-## Documentation
-
-Detailed documentation is available at [here](https://github.com/melandlabs/alloomi/wiki).
-
-## Community
-
-[![Discord](https://img.shields.io/badge/Discord-Join-5865F2?logo=discord&logoColor=white)](https://discord.com/invite/xkJaJyWcsv) [![X](https://img.shields.io/badge/X-Follow-000000?logo=x&logoColor=white)](https://x.com/AlloomiAI) [![Email Us](https://img.shields.io/badge/Email_Us-developer@alloomi.ai-24C8D5?logo=email&logoColor=white)](mailto:developer@alloomi.ai)
+See [CONTRIBUTING.md](./CONTRIBUTING.md). Look for [`good first issue`](https://github.com/melandlabs/alloomi/labels/good%20first%20issue) labels.
 
 ## License
 
-Apache License 2.0 — see [LICENSE](./LICENSE)
+[Apache 2.0](./LICENSE)
