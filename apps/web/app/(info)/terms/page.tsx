@@ -67,8 +67,8 @@ export default function TermsOfService() {
   return (
     <>
       <Head>
-        <title>Alloomi Terms of Service</title>
-        <meta name="description" content="Terms of Service for Alloomi." />
+        <title>openloomi Terms of Service</title>
+        <meta name="description" content="Terms of Service for openloomi." />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
         <link rel="icon" href="/favicon.ico" />
       </Head>
@@ -78,7 +78,7 @@ export default function TermsOfService() {
           <div className="max-w-5xl mx-auto">
             <div className="mb-10">
               <h1 className="text-3xl md:text-4xl font-bold text-gray-900 mb-4">
-                Alloomi Terms of Service
+                openloomi Terms of Service
               </h1>
               <p className="text-gray-500 mt-2">
                 Effective Date: August 4, 2025 &nbsp;|&nbsp; Last Updated: March
@@ -182,11 +182,11 @@ export default function TermsOfService() {
                           ],
                           [
                             "B. Account Terms",
-                            "Requirements for having an account with Alloomi",
+                            "Requirements for having an account with openloomi",
                           ],
                           [
                             "C. Acceptable Use",
-                            "Rules you must follow when using Alloomi services",
+                            "Rules you must follow when using openloomi services",
                           ],
                           [
                             "D. User-Generated Content",
@@ -194,19 +194,19 @@ export default function TermsOfService() {
                           ],
                           [
                             "E. Data Privacy",
-                            "How Alloomi handles your IM and email data and private information",
+                            "How openloomi handles your IM and email data and private information",
                           ],
                           [
                             "F. AI Features & Disclaimer",
-                            "How Alloomi uses AI and the limitations of AI-generated content",
+                            "How openloomi uses AI and the limitations of AI-generated content",
                           ],
                           [
                             "G. Copyright Policy",
-                            "How Alloomi responds to copyright infringement claims",
+                            "How openloomi responds to copyright infringement claims",
                           ],
                           [
                             "H. Intellectual Property",
-                            "Alloomi\u2019 rights in its website and services",
+                            "openloomi\u2019 rights in its website and services",
                           ],
                           [
                             "I. Fees and Payment",
@@ -262,7 +262,7 @@ export default function TermsOfService() {
                   <div className="prose prose-gray max-w-none">
                     <p>
                       &quot;Account&quot; means your registered account with
-                      Alloomi, representing your legal relationship with us.
+                      openloomi, representing your legal relationship with us.
                     </p>
 
                     <p>
@@ -287,13 +287,13 @@ export default function TermsOfService() {
                     </p>
 
                     <p>
-                      &quot;Alloomi,&quot; &quot;we,&quot; or &quot;us&quot;
-                      refers to Alloomi Inc., including our affiliates,
+                      &quot;openloomi,&quot; &quot;we,&quot; or &quot;us&quot;
+                      refers to openloomi Inc., including our affiliates,
                       directors, employees, and agents.
                     </p>
 
                     <p>
-                      &quot;Service&quot; means Alloomi&apos; applications,
+                      &quot;Service&quot; means openloomi&apos; applications,
                       software, products, and services, including integrations
                       with Telegram, Slack, Gmail and any Beta Previews.
                     </p>
@@ -326,31 +326,32 @@ export default function TermsOfService() {
                   </div>
                   <div className="prose prose-gray max-w-none">
                     <p>
-                      <strong>1. Account Creation:</strong> To use Alloomi, you
-                      must have a valid email account and authorize Alloomi to
-                      access your IM or email. You must provide accurate
-                      information during setup.
+                      <strong>1. Account Creation:</strong> To use openloomi,
+                      you must have a valid email account and authorize
+                      openloomi to access your IM or email. You must provide
+                      accurate information during setup.
                     </p>
 
                     <p>
                       <strong>2. Account Responsibility:</strong> You are
                       responsible for all activities conducted through your
-                      Alloomi account. You must maintain the security of your IM
-                      or email credentials, as they control access to Alloomi.
+                      openloomi account. You must maintain the security of your
+                      IM or email credentials, as they control access to
+                      openloomi.
                     </p>
 
                     <p>
                       <strong>3. Eligibility:</strong> You must be at least{" "}
                       <strong>18 years old</strong>, or the age of legal
                       majority in your jurisdiction, whichever is higher, to use
-                      Alloomi. By using Alloomi, you represent and warrant that
-                      you meet this age requirement and have the legal capacity
-                      to enter into this Agreement.
+                      openloomi. By using openloomi, you represent and warrant
+                      that you meet this age requirement and have the legal
+                      capacity to enter into this Agreement.
                     </p>
 
                     <p>
                       <strong>4. Account Limits:</strong> Individual users may
-                      maintain one Alloomi account. Organizations may have
+                      maintain one openloomi account. Organizations may have
                       multiple user accounts under a single organizational plan,
                       subject to plan limits.
                     </p>
@@ -375,14 +376,14 @@ export default function TermsOfService() {
                   </h2>
                   <div className="bg-gray-50 p-4 rounded-md mb-6">
                     <p className="text-sm font-medium text-gray-700">
-                      <strong>Short version:</strong> Use Alloomi in a way that
-                      complies with laws and doesn&apos;t harm others or the
-                      service.
+                      <strong>Short version:</strong> Use openloomi in a way
+                      that complies with laws and doesn&apos;t harm others or
+                      the service.
                     </p>
                   </div>
                   <div className="prose prose-gray max-w-none">
                     <p>
-                      <strong>1. Permitted Use:</strong> You may use Alloomi
+                      <strong>1. Permitted Use:</strong> You may use openloomi
                       only for lawful purposes and in accordance with this
                       Agreement.
                     </p>
@@ -393,20 +394,22 @@ export default function TermsOfService() {
                     </p>
                     <ul>
                       <li>
-                        Use Alloomi to violate any law, regulation, or
+                        Use openloomi to violate any law, regulation, or
                         third-party rights
                       </li>
                       <li>
                         Interfere with or disrupt the Service or its security
                       </li>
                       <li>Attempt to access unauthorized data or accounts</li>
-                      <li>Use Alloomi to send spam or unsolicited messages</li>
                       <li>
-                        Reverse engineer, decompile, or attempt to extract
-                        Alloomi&apos; source code
+                        Use openloomi to send spam or unsolicited messages
                       </li>
                       <li>
-                        Use Alloomi in a way that could damage, disable, or
+                        Reverse engineer, decompile, or attempt to extract
+                        openloomi&apos; source code
+                      </li>
+                      <li>
+                        Use openloomi in a way that could damage, disable, or
                         overburden the Service
                       </li>
                       <li>
@@ -437,7 +440,7 @@ export default function TermsOfService() {
                   <div className="bg-gray-50 p-4 rounded-md mb-6">
                     <p className="text-sm font-medium text-gray-700">
                       <strong>Short version:</strong> You own your content, but
-                      grant Alloomi necessary rights to provide the service.
+                      grant openloomi necessary rights to provide the service.
                     </p>
                   </div>
                   <div className="prose prose-gray max-w-none">
@@ -448,7 +451,7 @@ export default function TermsOfService() {
                     </p>
 
                     <p>
-                      <strong>2. License Grant:</strong> You grant Alloomi a
+                      <strong>2. License Grant:</strong> You grant openloomi a
                       limited, non-exclusive license to access, process, and
                       display your IM or email content solely to provide the
                       Service, including:
@@ -460,7 +463,7 @@ export default function TermsOfService() {
                       <li>Generating summaries and notifications</li>
                       <li>Storing data temporarily to provide features</li>
                       <li>
-                        Displaying relevant content within Alloomi&apos;
+                        Displaying relevant content within openloomi&apos;
                         interface
                       </li>
                     </ul>
@@ -468,7 +471,7 @@ export default function TermsOfService() {
                     <p>
                       <strong>3. Content Responsibility:</strong> You are solely
                       responsible for your Content and ensuring you have rights
-                      to share it through Alloomi.
+                      to share it through openloomi.
                     </p>
                   </div>
                 </section>
@@ -484,16 +487,16 @@ export default function TermsOfService() {
                   </h2>
                   <div className="bg-gray-50 p-4 rounded-md mb-6">
                     <p className="text-sm font-medium text-gray-700">
-                      <strong>Short version:</strong> Alloomi treats your IM or
-                      email data as confidential and only uses it to provide the
-                      service. Raw messages stay on your device; only processed
-                      summaries may be sent to the cloud.
+                      <strong>Short version:</strong> openloomi treats your IM
+                      or email data as confidential and only uses it to provide
+                      the service. Raw messages stay on your device; only
+                      processed summaries may be sent to the cloud.
                     </p>
                   </div>
                   <div className="prose prose-gray max-w-none">
                     <p>
-                      <strong>1. Data Access:</strong> Alloomi accesses your IM
-                      or email data only as necessary to provide features
+                      <strong>1. Data Access:</strong> openloomi accesses your
+                      IM or email data only as necessary to provide features
                       you&apos;ve enabled, and in accordance with our Privacy
                       Policy.
                     </p>
@@ -505,12 +508,12 @@ export default function TermsOfService() {
                       our cloud servers. Only derived information—such as AI-
                       generated summaries, extracted action items, and smart
                       reply suggestions—may be transmitted to and stored on
-                      Alloomi cloud infrastructure for the purpose of delivering
-                      the Service.
+                      openloomi cloud infrastructure for the purpose of
+                      delivering the Service.
                     </p>
 
                     <p>
-                      <strong>3. Data Security:</strong> Alloomi implements
+                      <strong>3. Data Security:</strong> openloomi implements
                       industry-standard technical and organizational measures to
                       protect your data, including:
                     </p>
@@ -543,14 +546,14 @@ export default function TermsOfService() {
                     </p>
 
                     <p>
-                      <strong>4. Data Retention:</strong> Alloomi retains your
+                      <strong>4. Data Retention:</strong> openloomi retains your
                       IM or email data only for as long as necessary to provide
                       the Service or as required by law. You can request data
                       deletion by canceling your account.
                     </p>
 
                     <p>
-                      <strong>5. Data Sharing:</strong> Alloomi does not sell
+                      <strong>5. Data Sharing:</strong> openloomi does not sell
                       your IM or email data to third parties. We may share data
                       with service providers who assist us in operating the
                       Service, subject to confidentiality obligations. We only
@@ -560,13 +563,13 @@ export default function TermsOfService() {
 
                     <p>
                       <strong>6. Third-Party Service Providers:</strong> To
-                      deliver the Service, Alloomi works with the following
+                      deliver the Service, openloomi works with the following
                       categories of trusted third-party providers:
                     </p>
                     <ul>
                       <li>
                         <strong>Cloud Infrastructure – Vercel:</strong> We use
-                        Vercel to host and serve the Alloomi web application.
+                        Vercel to host and serve the openloomi web application.
                         Vercel may process technical data (such as IP addresses
                         and request logs) as part of providing hosting services.
                       </li>
@@ -602,7 +605,7 @@ export default function TermsOfService() {
                     <p>
                       <strong>8. Data Breach Notification:</strong> In the event
                       of a data security breach that affects your personal
-                      information, Alloomi commits to notifying affected users
+                      information, openloomi commits to notifying affected users
                       within <strong>72 hours</strong> of becoming aware of the
                       breach, where feasible. We will also report the breach to
                       relevant regulatory authorities as required by applicable
@@ -651,7 +654,7 @@ export default function TermsOfService() {
                   </h2>
                   <div className="bg-gray-50 p-4 rounded-md mb-6">
                     <p className="text-sm font-medium text-gray-700">
-                      <strong>Short version:</strong> Alloomi uses AI to help
+                      <strong>Short version:</strong> openloomi uses AI to help
                       you work smarter, but AI-generated content may not always
                       be accurate. Please review all AI output before acting on
                       it.
@@ -659,7 +662,7 @@ export default function TermsOfService() {
                   </div>
                   <div className="prose prose-gray max-w-none">
                     <p>
-                      <strong>1. AI-Powered Features:</strong> Alloomi uses
+                      <strong>1. AI-Powered Features:</strong> openloomi uses
                       artificial intelligence and large language models to
                       provide the following features, among others:
                     </p>
@@ -693,7 +696,7 @@ export default function TermsOfService() {
                       content is produced by automated systems and may contain
                       errors, omissions, biases, or inaccuracies.{" "}
                       <strong>
-                        Alloomi does not guarantee the accuracy, completeness,
+                        openloomi does not guarantee the accuracy, completeness,
                         reliability, or fitness for any particular purpose of
                         any AI-generated content.
                       </strong>{" "}
@@ -711,7 +714,7 @@ export default function TermsOfService() {
 
                     <p>
                       <strong>4. No Responsibility for AI Output:</strong> To
-                      the maximum extent permitted by applicable law, Alloomi
+                      the maximum extent permitted by applicable law, openloomi
                       assumes no liability for any decisions made, actions
                       taken, or consequences arising from your use of or
                       reliance on AI-generated content.
@@ -730,13 +733,14 @@ export default function TermsOfService() {
                   </h2>
                   <div className="bg-gray-50 p-4 rounded-md mb-6">
                     <p className="text-sm font-medium text-gray-700">
-                      <strong>Short version:</strong> Alloomi respects copyright
-                      law and will respond to valid infringement claims.
+                      <strong>Short version:</strong> openloomi respects
+                      copyright law and will respond to valid infringement
+                      claims.
                     </p>
                   </div>
                   <div className="prose prose-gray max-w-none">
                     <p>
-                      If you believe that content accessed through Alloomi
+                      If you believe that content accessed through openloomi
                       infringes your copyright, please contact us with a
                       detailed notice containing the following:
                     </p>
@@ -765,7 +769,7 @@ export default function TermsOfService() {
                       <li>Your physical or electronic signature</li>
                     </ol>
                     <p>
-                      Alloomi will respond to valid notices by removing or
+                      openloomi will respond to valid notices by removing or
                       disabling access to the infringing material and may
                       terminate accounts of repeat infringers.
                     </p>
@@ -783,25 +787,26 @@ export default function TermsOfService() {
                   </h2>
                   <div className="bg-gray-50 p-4 rounded-md mb-6">
                     <p className="text-sm font-medium text-gray-700">
-                      <strong>Short version:</strong> Alloomi owns its service
+                      <strong>Short version:</strong> openloomi owns its service
                       and brand, while you retain rights to your content.
                     </p>
                   </div>
                   <div className="prose prose-gray max-w-none">
                     <p>
-                      <strong>1. Alloomi Ownership:</strong> Alloomi and its
+                      <strong>1. openloomi Ownership:</strong> openloomi and its
                       licensors retain all intellectual property rights in the
                       Service, including but not limited to software, source
                       code, algorithms, machine learning models, trademarks,
                       logos, trade names, trade secrets, and any content or
-                      materials created by Alloomi. All rights not expressly
-                      granted to you in this Agreement are reserved by Alloomi.
+                      materials created by openloomi. All rights not expressly
+                      granted to you in this Agreement are reserved by
+                      openloomi.
                     </p>
 
                     <p>
                       <strong>2. Limited License to You:</strong> Subject to
-                      your compliance with this Agreement, Alloomi grants you a
-                      limited, non-exclusive, non-transferable,
+                      your compliance with this Agreement, openloomi grants you
+                      a limited, non-exclusive, non-transferable,
                       non-sublicensable, revocable license to access and use the
                       Service solely for your personal or internal business
                       purposes. This license does not include the right to:
@@ -809,7 +814,7 @@ export default function TermsOfService() {
                     <ul>
                       <li>
                         Copy, reproduce, distribute, or create derivative works
-                        of the Service or any Alloomi content
+                        of the Service or any openloomi content
                       </li>
                       <li>
                         Reverse engineer, decompile, disassemble, or otherwise
@@ -820,25 +825,25 @@ export default function TermsOfService() {
                         labels, or marks on the Service
                       </li>
                       <li>
-                        Use Alloomi&apos; trademarks or brand assets without
+                        Use openloomi&apos; trademarks or brand assets without
                         prior written permission
                       </li>
                     </ul>
 
                     <p>
-                      <strong>3. Feedback:</strong> If you provide Alloomi with
-                      any feedback, suggestions, or ideas regarding the Service
-                      (&quot;Feedback&quot;), you grant Alloomi a worldwide,
-                      royalty-free, irrevocable, perpetual license to use, copy,
-                      modify, and incorporate such Feedback into the Service
-                      without any obligation to you.
+                      <strong>3. Feedback:</strong> If you provide openloomi
+                      with any feedback, suggestions, or ideas regarding the
+                      Service (&quot;Feedback&quot;), you grant openloomi a
+                      worldwide, royalty-free, irrevocable, perpetual license to
+                      use, copy, modify, and incorporate such Feedback into the
+                      Service without any obligation to you.
                     </p>
 
                     <p>
                       <strong>4. Your Content:</strong> You retain all
                       intellectual property rights in your Content. Nothing in
                       this Agreement transfers ownership of your Content to
-                      Alloomi. The limited license you grant under §D.2 is
+                      openloomi. The limited license you grant under §D.2 is
                       solely for the purpose of operating and improving the
                       Service.
                     </p>
@@ -859,7 +864,7 @@ export default function TermsOfService() {
                       <strong>1. Subscription Plans and Fees</strong>
                       <ul className="list-disc pl-6 mt-2 space-y-1 prose prose-gray max-w-none">
                         <li>
-                          Alloomi offers different subscription plans ({" "}
+                          openloomi offers different subscription plans ({" "}
                           <strong>Trial, Basic, Pro, and Team plans</strong>
                           ).
                         </li>
@@ -887,9 +892,9 @@ export default function TermsOfService() {
                           ensure it remains accurate, complete, and up to date.
                         </li>
                         <li>
-                          By submitting payment, the user authorizes Alloomi to
-                          charge the applicable fees via Stripe for each billing
-                          cycle.
+                          By submitting payment, the user authorizes openloomi
+                          to charge the applicable fees via Stripe for each
+                          billing cycle.
                         </li>
                       </ul>
                     </li>
@@ -912,7 +917,7 @@ export default function TermsOfService() {
                       <strong>4. Free Trial and Usage Limits</strong>
                       <ul className="list-disc pl-6 mt-2 space-y-1 prose prose-gray max-w-none">
                         <li>
-                          Alloomi may offer a <strong>free trial</strong> or
+                          openloomi may offer a <strong>free trial</strong> or
                           limited free usage for new users.
                         </li>
                         <li>
@@ -951,11 +956,11 @@ export default function TermsOfService() {
                           All fees are <strong>non-refundable</strong> once
                           paid, except as otherwise required by applicable law
                           in your jurisdiction or as explicitly promised by
-                          Alloomi.
+                          openloomi.
                         </li>
                         <li>
                           If the service experiences a major outage or becomes
-                          unavailable, users may contact Alloomi Support for
+                          unavailable, users may contact openloomi Support for
                           case-by-case resolution.
                         </li>
                       </ul>
@@ -964,7 +969,7 @@ export default function TermsOfService() {
                       <strong>7. Price Adjustments</strong>
                       <ul className="list-disc pl-6 mt-2 space-y-1 prose prose-gray max-w-none">
                         <li>
-                          Alloomi reserves the right to adjust subscription
+                          openloomi reserves the right to adjust subscription
                           prices and features at any time.
                         </li>
                         <li>
@@ -1005,21 +1010,21 @@ export default function TermsOfService() {
                   </h2>
                   <div className="bg-gray-50 p-4 rounded-md mb-6">
                     <p className="text-sm font-medium text-gray-700">
-                      <strong>Short version:</strong> Alloomi&apos; liability
+                      <strong>Short version:</strong> openloomi&apos; liability
                       for direct damages is capped at the subscription fees you
-                      paid. Alloomi is not liable for indirect or consequential
-                      losses.
+                      paid. openloomi is not liable for indirect or
+                      consequential losses.
                     </p>
                   </div>
                   <div className="prose prose-gray max-w-none">
                     <p>
                       <strong>1. Cap on Direct Damages:</strong> To the maximum
-                      extent permitted by applicable law, Alloomi&apos; total
+                      extent permitted by applicable law, openloomi&apos; total
                       cumulative liability to you for any direct damages arising
                       out of or related to this Agreement or the Service shall
                       not exceed the{" "}
                       <strong>
-                        total subscription fees paid by you to Alloomi in the
+                        total subscription fees paid by you to openloomi in the
                         twelve (12) months immediately preceding the event
                         giving rise to the claim
                       </strong>
@@ -1028,19 +1033,19 @@ export default function TermsOfService() {
 
                     <p>
                       <strong>2. Exclusion of Indirect Damages:</strong> To the
-                      maximum extent permitted by applicable law, Alloomi shall
-                      not be liable for any indirect, incidental, special,
+                      maximum extent permitted by applicable law, openloomi
+                      shall not be liable for any indirect, incidental, special,
                       consequential, punitive, or exemplary damages, including
                       but not limited to loss of profits, loss of data, loss of
                       goodwill, business interruption, or cost of substitute
-                      services, even if Alloomi has been advised of the
+                      services, even if openloomi has been advised of the
                       possibility of such damages.
                     </p>
 
                     <p>
-                      <strong>3. AI-Generated Content:</strong> Alloomi assumes
-                      no liability for any loss or damage arising from your use
-                      of or reliance on AI-generated content, including
+                      <strong>3. AI-Generated Content:</strong> openloomi
+                      assumes no liability for any loss or damage arising from
+                      your use of or reliance on AI-generated content, including
                       summaries, smart reply suggestions, action item
                       extractions, or operation execution recommendations. All
                       AI-generated output is provided &quot;as is&quot; without
@@ -1051,8 +1056,8 @@ export default function TermsOfService() {
                     </p>
 
                     <p>
-                      <strong>4. Service Availability:</strong> Alloomi does not
-                      warrant that the Service will be uninterrupted,
+                      <strong>4. Service Availability:</strong> openloomi does
+                      not warrant that the Service will be uninterrupted,
                       error-free, or free from harmful components. The Service
                       is provided on an &quot;as is&quot; and &quot;as
                       available&quot; basis.
@@ -1095,7 +1100,7 @@ export default function TermsOfService() {
                     </p>
 
                     <p>
-                      <strong>2. Right to Restrict:</strong> Alloomi reserves
+                      <strong>2. Right to Restrict:</strong> openloomi reserves
                       the right, at its sole discretion and at any time, to
                       restrict or discontinue the availability of the Service or
                       any portion thereof to any individual, geographic region,
@@ -1157,7 +1162,7 @@ export default function TermsOfService() {
                     <p>
                       <strong>1. Entire Agreement:</strong> This Agreement,
                       together with our Privacy Policy, constitutes the entire
-                      agreement between you and Alloomi regarding the Service
+                      agreement between you and openloomi regarding the Service
                       and supersedes all prior agreements and understandings.
                     </p>
 
@@ -1170,28 +1175,28 @@ export default function TermsOfService() {
                     </p>
 
                     <p>
-                      <strong>3. Waiver:</strong> Alloomi&apos; failure to
+                      <strong>3. Waiver:</strong> openloomi&apos; failure to
                       enforce any right or provision of this Agreement will not
                       be considered a waiver of those rights.
                     </p>
 
                     <p>
                       <strong>4. Assignment:</strong> You may not assign or
-                      transfer this Agreement without Alloomi&apos; prior
-                      written consent. Alloomi may assign this Agreement without
-                      restriction.
+                      transfer this Agreement without openloomi&apos; prior
+                      written consent. openloomi may assign this Agreement
+                      without restriction.
                     </p>
 
                     <p>
-                      <strong>5. Amendments:</strong> Alloomi reserves the right
-                      to modify these Terms at any time. We will notify you of
-                      material changes via email or prominent notice on the
-                      Service. Your continued use of the Service after such
+                      <strong>5. Amendments:</strong> openloomi reserves the
+                      right to modify these Terms at any time. We will notify
+                      you of material changes via email or prominent notice on
+                      the Service. Your continued use of the Service after such
                       notice constitutes your acceptance of the updated Terms.
                     </p>
 
                     <p>
-                      <strong>6. Force Majeure:</strong> Alloomi shall not be
+                      <strong>6. Force Majeure:</strong> openloomi shall not be
                       liable for any delay or failure in performance resulting
                       from causes beyond its reasonable control, including but
                       not limited to acts of God, war, terrorism, government
@@ -1223,7 +1228,7 @@ export default function TermsOfService() {
                     </Link>
                     <button
                       type="button"
-                      onClick={() => openUrl("https://alloomi.ai/docs")}
+                      onClick={() => openUrl("https://openloomi.ai/docs")}
                       className="text-purple-700 hover:text-purple-800 hover:underline"
                     >
                       Help
