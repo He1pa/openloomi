@@ -4,7 +4,7 @@ import { RemixIcon } from "@/components/remix-icon";
 import { useMobileDetection } from "@/hooks/use-mobile-detection";
 import { generateUUID } from "@/lib/utils";
 import { useCustomEvent } from "@openloomi/hooks/use-custom-event";
-import { Badge, Button } from "@openloomi/ui";
+import { Button } from "@openloomi/ui";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -332,7 +332,8 @@ export function AppSidebar() {
       currentPage === "openloomi-soul" ||
       currentPage === "account-settings" ||
       currentPage === "profile-edit" ||
-      pathname === "/inbox";
+      pathname === "/inbox" ||
+      pathname === "/skills";
     return isProfileSettingsPage;
   }, [pathname, searchParams]);
 
@@ -362,6 +363,13 @@ export function AppSidebar() {
         icon: "radar",
         type: "internal" as const,
         href: "/inbox",
+      },
+      {
+        key: "skills",
+        title: "settings.skillsNavTitle",
+        icon: "apps_2_ai",
+        type: "internal" as const,
+        href: "/skills",
       },
     ],
     [],
