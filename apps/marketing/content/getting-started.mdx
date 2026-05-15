@@ -37,9 +37,20 @@ You'll know it's working when you see your first Event appear.
 | Homebrew                                                                                                                                      | For developers — see command below                         |
 
 ```bash
+# If you have a manual installation, remove it first:
+# rm -rf /Applications/openloomi.app
+
 # Install via Homebrew
 brew tap melandlabs/openloomi https://github.com/melandlabs/openloomi
 brew install --cask openloomi
+
+# Upgrade
+brew upgrade --cask alloomi
+
+# If install or upgrade fails with "App source is not there", clear cache and reinstall:
+# rm -rf ~/Library/Caches/Homebrew/openloomi
+# brew uninstall --cask openloomi
+# brew install --cask openloomi
 ```
 
 **Linux (Ubuntu/Debian)**
