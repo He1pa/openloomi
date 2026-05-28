@@ -32,7 +32,7 @@ export function Navbar({
   links = [
     { name: "Home", href: "/" },
     { name: "Docs", href: "/docs" },
-    { name: "Blog", href: "/blogs" },
+    { name: "Blogs", href: "/blogs" },
   ],
   showAuthButtons = false,
   onSignInClick,
