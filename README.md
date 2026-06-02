@@ -4,11 +4,7 @@
   <img src="apps/web/public/images/logo-text.png" alt="OpenLoomi Logo" width="400">
 </picture>
 
-<br>
-
 **Your AI Mates that Remembers All Work Details.**
-
-<br>
 
 <p align="center">
 <a href="./README.md">English</a> | <a href="./README-zh.md">简体中文</a>

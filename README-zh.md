@@ -4,15 +4,11 @@
   <img src="apps/web/public/images/logo-text.png" alt="OpenLoomi Logo" width="400">
 </picture>
 
-<br>
-
 <p align="center">
 <a href="./README.md">English</a> | <a href="./README-zh.md">简体中文</a>
 </p>
 
 **你的 AI 工作伙伴，记住所有工作细节。**
-
-<br>
 
 [![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-4B4B4B?logo=linux&logoColor=white)](https://openloomi.ai)
 [![License](https://img.shields.io/badge/License-Apache%202.0-F8D52A?logo=apache)](https://www.apache.org/licenses/LICENSE-2.0)
