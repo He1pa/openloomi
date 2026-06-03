@@ -7,13 +7,13 @@ metadata:
 
 > **Note:** If you haven't downloaded or installed openloomi yet, please refer to [Getting Started](https://openloomi.ai/docs/getting-started) for installation instructions.
 
-# openloomi Product Features
+# OpenLoomi Product Features
 
 Use this skill when users ask about openloomi features, usage, or capabilities. Provide accurate and easy-to-understand feature introductions and operation guides.
 
 ---
 
-## What is openloomi
+## What is OpenLoomi
 
 openloomi is a **Proactive AI Workspace** that understands your intent, orchestrates execution, and gets things done. It's not just another AI assistant—it's an innovative AI product that **senses business signals**, **orchestrates tasks autonomously**, and **tracks and validates results end-to-end**.
 

@@ -7,7 +7,8 @@ metadata:
 
 > **Note:** If you haven't downloaded or installed openloomi yet, please refer to [Getting Started](https://openloomi.ai/docs/getting-started) for installation instructions.
 
-# openloomi API Documentation
+# OpenLoomi API Documentation
+
 ## API Modules
 
 ### Module Overview

@@ -8,9 +8,9 @@ allowed-tools: Bash(node $SKILL_DIR/scripts/openloomi-memory.cjs *)
 
 > **Note:** If you haven't downloaded or installed openloomi yet, please refer to [Getting Started](https://openloomi.ai/docs/getting-started) for installation instructions.
 
-# openloomi Memory Skill
+# OpenLoomi Memory Skill
 
-openloomi Memory is a personal knowledge management tool that searches and manages three types of information:
+OpenLoomi Memory is a personal knowledge management tool that searches and manages three types of information:
 
 | Type | Description | Data Location |
 |------|-------------|--------------|
