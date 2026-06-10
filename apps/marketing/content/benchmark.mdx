@@ -25,23 +25,6 @@ LoCoMo contains real conversation records with corresponding observations, summa
 | `multi_hop`   | Cross-session multi-step reasoning  |
 | `open_domain` | Open-domain fusion Q&A              |
 
-### Results
-
-| Conversation | Total | Passed | Pass Rate |
-| ------------ | ----- | ------ | --------- |
-| conv-26      | 150   | 149    | 97.40%    |
-| conv-30      | 80    | 81     | 98.77%    |
-| conv-41      | 152   | 152    | 100%      |
-| conv-42      | 191   | 199    | 95.98%    |
-| conv-43      | 167   | 178    | 93.82%    |
-| conv-44      | 113   | 123    | 91.87%    |
-| conv-47      | 145   | 150    | 96.67%    |
-| conv-48      | 187   | 191    | 97.91%    |
-| conv-49      | 146   | 156    | 93.59%    |
-| conv-50      | 154   | 158    | 97.47%    |
-
-**End-to-end accuracy: 96.3%**
-
 Performance is on par with leading open-source memory projects like agentmemory and mempalace.
 
 🔗 [GitHub Repository](https://github.com/melandlabs/openloomi/tree/main/benchmark/locomo)
@@ -62,28 +45,3 @@ Extracted from real multi-turn conversations, LongMemEval contains questions cov
 - **temporal-reasoning**: Time-sensitive query reasoning
 - **knowledge-update**: Knowledge iteration and fact changes
 - **single-session-preference**: User preference queries
-
-### Results
-
-| Type                      | Count   | Accuracy            |
-| ------------------------- | ------- | ------------------- |
-| single-session-assistant  | 56      | 100% (56/56)        |
-| single-session-user       | 70      | 100% (70/70)        |
-| multi-session             | 133     | 98.5% (131/133)     |
-| temporal-reasoning        | 133     | 97.7% (130/133)     |
-| knowledge-update          | 78      | 94.9% (74/78)       |
-| single-session-preference | 30      | 90.0% (27/30)       |
-| **Overall**               | **500** | **97.6% (488/500)** |
-
-The system demonstrates high robustness and accuracy in complex multimodal memory reasoning tasks.
-
-🔗 [GitHub Repository](https://github.com/melandlabs/openloomi/tree/main/benchmark/longmemeval)
-
-## Performance Summary
-
-| Benchmark     | Metric              | Result    |
-| ------------- | ------------------- | --------- |
-| LoCoMo        | End-to-end accuracy | **96.3%** |
-| LongMemEval-S | End-to-end accuracy | **97.6%** |
-
-All benchmarks demonstrate performance on par with or exceeding current leading open-source memory projects, validating OpenLoomi's approach to agent memory systems.
