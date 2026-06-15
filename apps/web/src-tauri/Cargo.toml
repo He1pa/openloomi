@@ -1,6 +1,6 @@
 [package]
 name = "openloomi"
-version = "0.5.0"
+version = "0.6.0"
 description = "openloomi AI Assistant - Your Personal Productivity Tool"
 authors = ["OpenLoomi Team"]
 edition = "2021"
@@ -13,7 +13,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2.11", features = ["devtools"] }
+tauri = { version = "=2.11.0", features = ["devtools", "tray-icon"] }
 tauri-plugin-shell = "2"
 tauri-plugin-opener = "2"
 tauri-plugin-fs = "2"
@@ -21,18 +21,41 @@ tauri-plugin-dialog = "2"
 tauri-plugin-window-state = "2"
 tauri-plugin-store = "2"
 tauri-plugin-notification = "2"
+tauri-plugin-global-shortcut = "2"
+device_query = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
 log = "0.4"
 sentry = { version = "0.32", features = [] }
 env_logger = "0.10"
+futures-util = "0.3"
 url = "2.5"
 reqwest = { version = "0.12", features = ["blocking", "json", "rustls-tls"] }
 base64 = "0.22"
 sha2 = "0.10"
-time = { version = "0.3", features = ["formatting"] }
+time = { version = "=0.3.36", features = ["formatting"] }
 sys-locale = "0.3"
+image = "0.25"
+# System audio capture: cross-platform loopback/output capture.
+# - macOS 14.6+: cpal loopback (cpal 0.17+)
+# - Windows: WASAPI loopback via cpal
+# - Linux: PulseAudio/PipeWire monitor via cpal
+cpal = "0.18"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+block2 = "0.6"
+core-foundation = "0.10"
+objc2 = "0.6"
+objc2-av-foundation = { version = "0.3.2", features = ["AVCaptureDevice", "AVMediaFormat", "block2"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["NSString", "alloc"] }
+# Updated to 7.x: Swift concurrency issues fixed in newer versions
+# TEMPORARILY DISABLED: screencapturekit = { version = "7", features = ["macos_13_0"] }
+# Screen capture: xcap uses ScreenCaptureKit on macOS (no PipeWire/libspa dependency)
+xcap = "=0.9.4"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [features]
 default = ["custom-protocol"]
