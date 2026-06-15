@@ -14,8 +14,16 @@ import {
 } from "@/lib/db/queries";
 import { getCloudAuthToken } from "@/lib/auth/token-manager";
 import { handleFeishuInboundMessage } from "./handler";
+import {
+  createFeishuState,
+  pruneDedupCache,
+  resolveChatType,
+} from "@openloomi/integrations/feishu/state";
 
 const DEBUG = process.env.DEBUG_FEISHU === "true";
+
+/** Module-level default state (replaces former top-level globals for testability). */
+const defaultState = createFeishuState();
 
 type FeishuCredentials = {
   appId?: string;
@@ -107,28 +115,20 @@ interface FeishuConnection {
 }
 
 /** Global: maintain connections by accountId for easy reconnect/destroy */
-const connections = new Map<string, FeishuConnection>();
+const connections = defaultState.connections as Map<string, FeishuConnection>;
 
 /** Deduplicate processed messages (based on OpenClaw PR #22675: deduplicate before dispatch to avoid duplicate replies from redelivery) key = `${accountId}:${messageId}`, value = processing timestamp */
-const processedMessageIds = new Map<string, number>();
+const processedMessageIds = defaultState.processedMessageIds;
 const DEDUP_TTL_MS = 5 * 60 * 1000; // 5 minutes
 const DEDUP_MAX_SIZE = 5000;
 
 function pruneProcessedMessageIds(): void {
-  if (processedMessageIds.size <= DEDUP_MAX_SIZE) return;
-  const now = Date.now();
-  for (const [key, ts] of processedMessageIds.entries()) {
-    if (now - ts > DEDUP_TTL_MS) processedMessageIds.delete(key);
-  }
-  if (processedMessageIds.size > DEDUP_MAX_SIZE) {
-    const entries = [...processedMessageIds.entries()].sort(
-      (a, b) => a[1] - b[1],
-    );
-    const toRemove = entries
-      .slice(0, Math.floor(entries.length / 2))
-      .map((e) => e[0]);
-    toRemove.forEach((k) => processedMessageIds.delete(k));
-  }
+  pruneDedupCache(
+    processedMessageIds,
+    Date.now(),
+    DEDUP_MAX_SIZE,
+    DEDUP_TTL_MS,
+  );
 }
 
 /** Logging: print when event is received for troubleshooting "only process current session" and "filter who sent" */
@@ -443,10 +443,7 @@ export async function startFeishuConnection(
         (data as any)?.message?.message_type ??
         (data as any)?.message?.msg_type ??
         "";
-      const chatType: "p2p" | "group" =
-        rawChatType === "group" || rawChatType === "topic_group"
-          ? "group"
-          : "p2p";
+      const chatType = resolveChatType(rawChatType);
       const mentions: unknown =
         (message as any)?.mentions ?? (data as any)?.message?.mentions;
       const messageAny = (message as any) ?? {};

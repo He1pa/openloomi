@@ -2,16 +2,22 @@
  * WeChat iLink Conversation Store
  *
  * File-backed per-day in-memory store for conversation history with AI.
- * Data persists to ~/.openloomi/memory/weixin/YYYY-MM-DD.json
+ * Data persists to ~/.openloomi/memory/{userId}/weixin/YYYY-MM-DD.json
  *
  * Token trimming is handled by handleAgentRuntime (40K budget) — not here.
  */
 
 import { WeixinConversationStore } from "@openloomi/integrations/weixin/conversation-store";
-import { getAppMemoryDir } from "@/lib/utils/path";
+import { getUserMemoryPath } from "@/lib/utils/path";
 
 export { WeixinConversationStore };
 
-export const weixinConversationStore = new WeixinConversationStore(
-  getAppMemoryDir(),
-);
+/**
+ * Create a WeixinConversationStore instance for a specific user.
+ * This ensures user data isolation at the filesystem level.
+ */
+export function createWeixinConversationStore(
+  userId: string,
+): WeixinConversationStore {
+  return new WeixinConversationStore(userId, getUserMemoryPath(userId));
+}

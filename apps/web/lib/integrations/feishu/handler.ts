@@ -17,19 +17,18 @@ import {
 } from "@/lib/db/queries";
 import { DEFAULT_AI_MODEL, AI_PROXY_BASE_URL } from "@/lib/env/constants";
 import { getCloudAuthToken } from "@/lib/auth/token-manager";
-import { handleAgentRuntime } from "@/lib/ai/runtime/shared";
-import { getRawMessageManager } from "@/lib/memory/raw-message-store";
-import { upsertRawMessagesToChroma } from "@/lib/memory/chroma-memory-index";
-import { buildMemoryRecordEmbeddingDocument } from "@openloomi/ai/memory";
+import { UserLocale } from "@openloomi/shared";
 import {
-  rawMessageToMemoryRecord,
-  type RawMessage,
-} from "@openloomi/indexeddb";
-import {
-  createUserEmbeddingProvider,
-  getUserEmbeddingModelName,
-  hasUserEmbeddingProviderConfig,
-} from "@/lib/ai/user-embedding-settings";
+  handleAgentRuntime,
+  formatAgentStreamErrorForUser,
+  formatCatchAllErrorForUser,
+  formatInsufficientAnswerForUser,
+} from "@/lib/ai/runtime/shared";
+import { classifyAgentError } from "@/lib/errors/known-errors";
+// Import from the standalone leaf module, NOT the @/lib/insights barrel: the
+// barrel re-exports processor.ts, which statically pulls every platform adapter
+// (googleapis, baileys, telegram, ...) into this boot-resident Feishu listener.
+import { resolveAgentLanguage } from "@/lib/insights/resolve-language";
 import {
   FeishuConversationStore,
   type ChatType,
@@ -40,18 +39,6 @@ import { FeishuAdapter } from "@openloomi/integrations/feishu";
 import { createTaskSession } from "@/lib/files/workspace/sessions";
 import { readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
-
-const FEISHU_UNIFIED_MEMORY_SEARCH_ONLY =
-  process.env.FEISHU_UNIFIED_MEMORY_SEARCH_ONLY === "true";
-const FEISHU_UNIFIED_MEMORY_EXCLUDED_TOOLS = [
-  "chatInsight",
-  "searchKnowledgeBase",
-  "getFullDocumentContent",
-  "listKnowledgeBaseDocuments",
-  "getRawMessages",
-  "searchRawMessages",
-  "searchMemoryPath",
-];
 
 type FeishuCredentials = {
   appId?: string;
@@ -66,10 +53,7 @@ const THREE_DAYS_SEC = Math.floor(THREE_DAYS_MS / 1000);
 const CONTEXT_HISTORY_MAX_CHARS = 20_000;
 
 /** Matches Insight settings language, used for Feishu-side visible text */
-function userPrefersChinese(language: string | null | undefined): boolean {
-  const n = (language ?? "").trim().toLowerCase();
-  return n.startsWith("zh");
-}
+const userPrefersChinese = UserLocale.isChineseCode;
 
 function pickUserLocale<T extends { zh: string; en: string }>(
   bundle: T,
@@ -83,22 +67,6 @@ const FEISHU_USER_COPY = {
   timeoutFallback: {
     zh: "处理超时，请缩短问题或稍后再试。（若经常在桌面端出现，请确认已登录云端并完成飞书连接时的鉴权。）",
     en: "The reply took too long. Try a shorter question or try again later. In the desktop app, ensure you are signed in to the cloud and Feishu has finished connecting.",
-  },
-  insufficient: {
-    zh: "当前信息不足，无法可靠回答。",
-    en: "Not enough context to answer reliably.",
-  },
-  authFailure: {
-    zh: "云端令牌无效或已过期，请在 openloomi 内重新登录后再向机器人发消息。（重启后请稍等界面加载完成再发。）",
-    en: "Your cloud session token is invalid or expired. Please sign in to openloomi again, then message the bot. After a restart, wait until the app has loaded.",
-  },
-  internalPlaceholder: {
-    zh: "模型服务暂时异常，请稍后再试。若刚重启应用，请确认已登录并等待几秒后再发消息。",
-    en: "The assistant service is temporarily unavailable. If you just restarted the app, wait a few seconds, make sure you are signed in, then try again.",
-  },
-  processingError: {
-    zh: "处理消息时出错了，请稍后重试。",
-    en: "Something went wrong while processing your message. Please try again later.",
   },
 } as const;
 
@@ -128,115 +96,6 @@ function formatEntryForModel(entry: QuotedMessage): RuntimeConversationMessage {
     role: entry.role,
     content: `${prefix}${entry.content}`,
   };
-}
-
-async function storeFeishuRawMessage(input: {
-  userId: string;
-  botId: string;
-  accountId: string;
-  messageId: string;
-  chatId: string;
-  chatType: "p2p" | "group";
-  role: "user" | "assistant";
-  content: string;
-  person?: string;
-  senderId?: string;
-  metadata?: Record<string, unknown>;
-  authToken?: string;
-}) {
-  const content = input.content.trim();
-  if (!content) {
-    return;
-  }
-
-  try {
-    const nowSec = Math.floor(Date.now() / 1000);
-    const manager = await getRawMessageManager();
-    const rawMessage: RawMessage = {
-      messageId: input.messageId,
-      platform: "feishu",
-      botId: input.botId,
-      userId: input.userId,
-      channel: input.chatId,
-      person: input.person,
-      timestamp: nowSec,
-      content,
-      attachments: [],
-      metadata: {
-        source: "feishu_ws_listener",
-        accountId: input.accountId,
-        chatType: input.chatType,
-        role: input.role,
-        senderId: input.senderId,
-        ...input.metadata,
-      },
-      createdAt: nowSec,
-    };
-    const messageWithEmbedding = await embedRawMessageOnWrite(
-      rawMessage,
-      input.authToken,
-    );
-    await manager.storeMessage(messageWithEmbedding);
-    await upsertRawMessagesToChroma([messageWithEmbedding]);
-    console.log("[Feishu] Stored raw message", {
-      messageId: input.messageId,
-      role: input.role,
-      chatId: input.chatId,
-      embedded: Boolean(messageWithEmbedding.embedding?.length),
-    });
-  } catch (error) {
-    console.warn("[Feishu] Failed to store raw message:", error);
-  }
-}
-
-async function embedRawMessageOnWrite(
-  message: RawMessage,
-  authToken?: string,
-): Promise<RawMessage> {
-  if (
-    !(await hasUserEmbeddingProviderConfig({
-      userId: message.userId,
-      authToken,
-    }))
-  ) {
-    return message;
-  }
-
-  try {
-    const document = buildMemoryRecordEmbeddingDocument(
-      rawMessageToMemoryRecord(message),
-    );
-    if (!document.content) {
-      return message;
-    }
-
-    const embeddings = await createUserEmbeddingProvider({
-      userId: message.userId,
-      authToken,
-    });
-    const [embedding] = await embeddings.embedDocuments([document.content]);
-    if (!embedding || embedding.length === 0) {
-      return message;
-    }
-
-    return {
-      ...message,
-      embedding,
-      embeddingModel: await getUserEmbeddingModelName(message.userId),
-      embeddingContentHash: document.contentHash,
-      embeddingDimensions: embedding.length,
-      embeddingUpdatedAt: Date.now(),
-    };
-  } catch (error) {
-    console.warn(
-      "[Feishu] Failed to embed raw message on write; dream will retry:",
-      {
-        messageId: message.messageId,
-        error: error instanceof Error ? error.message : String(error),
-      },
-    );
-    return message;
-  }
 }
 
 /**
@@ -347,34 +206,13 @@ export async function handleFeishuInboundMessage(
     if (LOG_FEISHU) console.log("[Feishu]", label, ...args);
   };
 
-  const token =
-    options?.authToken?.trim() || getCloudAuthToken()?.trim() || undefined;
-
+  let effectiveLanguage: string | null = null;
   let zhUiForUserCopy = false;
 
   try {
-    await storeFeishuRawMessage({
-      userId,
-      botId: bot.id,
-      accountId: account.id,
-      messageId,
-      chatId,
-      chatType,
-      role: "user",
-      content:
-        normalizedInputText ||
-        "[The user sent an image. Please analyze the image.]",
-      person: senderName || senderId,
-      senderId,
-      metadata: {
-        quoteIds: quoteIds && quoteIds.length > 0 ? quoteIds : undefined,
-        imageKeys: imageKeys && imageKeys.length > 0 ? imageKeys : undefined,
-      },
-      authToken: token,
-    });
-
     const insightSettings = await getUserInsightSettings(userId);
-    zhUiForUserCopy = userPrefersChinese(insightSettings?.language);
+    effectiveLanguage = resolveAgentLanguage(insightSettings);
+    zhUiForUserCopy = userPrefersChinese(effectiveLanguage);
     await getUserTypeForService(userId);
     await getUserById(userId);
 
@@ -646,6 +484,8 @@ export async function handleFeishuInboundMessage(
       CONTEXT_HISTORY_MAX_CHARS,
     );
 
+    const token =
+      options?.authToken?.trim() || getCloudAuthToken()?.trim() || undefined;
     if (!token) {
       console.warn(
         "[Feishu] No cloud auth token (connection + in-memory unset). Open the desktop app, sign in, wait for the Feishu listener to initialize, or re-save Feishu in Connectors.",
@@ -691,7 +531,7 @@ export async function handleFeishuInboundMessage(
           ...(imagesForModel.length > 0 ? { images: imagesForModel } : {}),
           stream: false,
           silentTools: true,
-          language: insightSettings?.language ?? null,
+          language: effectiveLanguage,
           abortController,
           ...(token && {
             modelConfig: {
@@ -756,12 +596,9 @@ export async function handleFeishuInboundMessage(
           ...(imagesForModel.length > 0 ? { images: imagesForModel } : {}),
           stream: false,
           silentTools: true,
-          language: insightSettings?.language ?? null,
+          language: effectiveLanguage,
           abortController,
           workDir,
-          ...(FEISHU_UNIFIED_MEMORY_SEARCH_ONLY
-            ? { excludeTools: FEISHU_UNIFIED_MEMORY_EXCLUDED_TOOLS }
-            : {}),
           ...(token && {
             modelConfig: {
               apiKey: token,
@@ -810,30 +647,17 @@ export async function handleFeishuInboundMessage(
       );
     }
 
-    const looksLikeAuthOrProxyFailure = (s: string) =>
-      s.includes("invalid token") ||
-      s.includes("new_api_error") ||
-      /Failed to authenticate/i.test(s) ||
-      (/\b401\b/.test(s) &&
-        /token|authenticate|authorization|Unauthorized|API Error/i.test(s));
-
-    const looksLikeInternalPlaceholder = (s: string) =>
-      s.includes("__INTERNAL_ERROR__") ||
-      s.includes("__API_KEY_ERROR__") ||
-      s.includes("__TIMEOUT_ERROR__");
-
     let toSend = hardTimeout
       ? answer.trim() ||
         pickUserLocale(FEISHU_USER_COPY.timeoutFallback, zhUiForUserCopy)
-      : answer ||
-        pickUserLocale(FEISHU_USER_COPY.insufficient, zhUiForUserCopy);
+      : answer || formatInsufficientAnswerForUser("feishu", effectiveLanguage);
 
-    if (looksLikeAuthOrProxyFailure(answer)) {
-      toSend = pickUserLocale(FEISHU_USER_COPY.authFailure, zhUiForUserCopy);
-    } else if (looksLikeInternalPlaceholder(answer)) {
-      toSend = pickUserLocale(
-        FEISHU_USER_COPY.internalPlaceholder,
-        zhUiForUserCopy,
+    const errorEnv = classifyAgentError(answer, { strict: true });
+    if (errorEnv) {
+      toSend = formatAgentStreamErrorForUser(
+        "feishu",
+        answer,
+        effectiveLanguage,
       );
     }
     logMsg("sending full reply content", toSend.slice(0, 500));
@@ -845,51 +669,15 @@ export async function handleFeishuInboundMessage(
       message: toSend,
       withAppSuffix: true,
     });
-
-    await storeFeishuRawMessage({
-      userId,
-      botId: bot.id,
-      accountId: account.id,
-      messageId: `${messageId}:bot-reply`,
-      chatId,
-      chatType,
-      role: "assistant",
-      content: toSend,
-      person: bot.name || "openloomi",
-      metadata: {
-        replyToMessageId: messageId,
-      },
-      authToken: token,
-    });
   } catch (error) {
     console.error("[Feishu] Failed to process inbound message:", error);
     try {
-      const fallbackMessage = pickUserLocale(
-        FEISHU_USER_COPY.processingError,
-        zhUiForUserCopy,
-      );
       await sendReplyByBotId({
         id: bot.id,
         userId,
         recipients: [chatId],
-        message: fallbackMessage,
+        message: formatCatchAllErrorForUser("feishu", error, effectiveLanguage),
         withAppSuffix: false,
-      });
-      await storeFeishuRawMessage({
-        userId,
-        botId: bot.id,
-        accountId: account.id,
-        messageId: `${messageId}:bot-error-reply`,
-        chatId,
-        chatType,
-        role: "assistant",
-        content: fallbackMessage,
-        person: bot.name || "openloomi",
-        metadata: {
-          replyToMessageId: messageId,
-          error: error instanceof Error ? error.message : String(error),
-        },
-        authToken: token,
       });
     } catch (e) {
       console.error("[Feishu] Failed to send error message:", e);

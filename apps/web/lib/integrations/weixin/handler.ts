@@ -9,13 +9,19 @@ import {
   type IntegrationAccountWithBot,
   getContact,
   getUserById,
+  getUserInsightSettings,
   getUserTypeForService,
   loadIntegrationCredentials,
   upsertContact,
 } from "@/lib/db/queries";
+import { resolveAgentLanguage } from "@/lib/insights/resolve-language";
 import type { UserType } from "@/app/(auth)/auth";
 import { DEFAULT_AI_MODEL, AI_PROXY_BASE_URL } from "@/lib/env/constants";
-import { handleAgentRuntime } from "@/lib/ai/runtime/shared";
+import {
+  handleAgentRuntime,
+  formatCatchAllErrorForUser,
+  formatInsufficientAnswerForUser,
+} from "@/lib/ai/runtime/shared";
 import {
   weixinSendImageMessage,
   weixinSendFileMessage,
@@ -284,6 +290,10 @@ async function processWeixinInboundMessage(
       }
       assembled.value += t;
     };
+    const runtimeInsightSettings = await getUserInsightSettings(userId).catch(
+      () => null,
+    );
+    const runtimeUserLanguage = resolveAgentLanguage(runtimeInsightSettings);
     await handleAgentRuntime(
       prompt,
       {
@@ -293,6 +303,7 @@ async function processWeixinInboundMessage(
         conversation: conversationHistory,
         stream: false,
         silentTools: true,
+        language: runtimeUserLanguage,
         // Pass downloaded and decrypted images to vision model (only pass when images are available)
         ...(images.length > 0 && { images }),
         // Pass voice/file attachments to Agent (can be used for auto-transcription or document reading)
@@ -338,7 +349,7 @@ async function processWeixinInboundMessage(
     }
 
     const toSend =
-      answer || "Insufficient information to answer, please try again later.";
+      answer || formatInsufficientAnswerForUser("weixin", runtimeUserLanguage);
     weixinLogger.debug(
       `Calling sendReplyByBotId, body length=${toSend.length} messageId=${params.messageId}`,
     );
@@ -371,12 +382,15 @@ async function processWeixinInboundMessage(
   } catch (error) {
     weixinLogger.error("Failed to process inbound message:", error);
     try {
+      const insightSettings = await getUserInsightSettings(userId).catch(
+        () => null,
+      );
+      const userLanguage = resolveAgentLanguage(insightSettings);
       await sendReplyByBotId({
         id: bot.id,
         userId,
         recipients: [params.fromUserId],
-        message:
-          "An error occurred while processing your message, please try again later.",
+        message: formatCatchAllErrorForUser("weixin", error, userLanguage),
         withAppSuffix: false,
         weixinContextToken: params.contextToken,
       });

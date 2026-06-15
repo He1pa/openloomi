@@ -6,11 +6,17 @@
 import { sendReplyByBotId } from "@/lib/bots/send-reply";
 import {
   type IntegrationAccountWithBot,
+  getUserInsightSettings,
   getUserTypeForService,
   getUserById,
 } from "@/lib/db/queries";
+import { resolveAgentLanguage } from "@/lib/insights/resolve-language";
 import { DEFAULT_AI_MODEL, AI_PROXY_BASE_URL } from "@/lib/env/constants";
-import { handleAgentRuntime } from "@/lib/ai/runtime/shared";
+import {
+  handleAgentRuntime,
+  formatCatchAllErrorForUser,
+  formatInsufficientAnswerForUser,
+} from "@/lib/ai/runtime/shared";
 import { DingTalkConversationStore } from "@openloomi/integrations/dingtalk";
 import { mkdir, readdir, stat } from "node:fs/promises";
 import { basename, extname, join } from "node:path";
@@ -203,6 +209,10 @@ export async function handleDingTalkInboundMessage(
       params.chatId,
     );
 
+    const runtimeInsightSettings = await getUserInsightSettings(userId).catch(
+      () => null,
+    );
+    const runtimeUserLanguage = resolveAgentLanguage(runtimeInsightSettings);
     await handleAgentRuntime(
       prompt,
       {
@@ -211,6 +221,7 @@ export async function handleDingTalkInboundMessage(
         stream: false,
         silentTools: true,
         workDir,
+        language: runtimeUserLanguage,
         ...(images.length > 0 && { images }),
         ...(fileAttachments.length > 0 && { fileAttachments }),
         ...(token && {
@@ -250,7 +261,9 @@ export async function handleDingTalkInboundMessage(
       );
     }
 
-    const toSend = answer || "I don't have enough context to answer that.";
+    const toSend =
+      answer ||
+      formatInsufficientAnswerForUser("dingtalk", runtimeUserLanguage);
     const linkAttachments = collectAttachmentsFromAnswerText(toSend);
     const allOutgoingAttachments = [
       ...generatedAttachments,
@@ -274,12 +287,15 @@ export async function handleDingTalkInboundMessage(
   } catch (error) {
     dingTalkLogger.error("Failed to process inbound message:", error);
     try {
+      const insightSettings = await getUserInsightSettings(userId).catch(
+        () => null,
+      );
+      const userLanguage = resolveAgentLanguage(insightSettings);
       await sendReplyByBotId({
         id: bot.id,
         userId,
         recipients: [chatId],
-        message:
-          "An error occurred while processing your message. Please try again later.",
+        message: formatCatchAllErrorForUser("dingtalk", error, userLanguage),
         withAppSuffix: false,
       });
     } catch (e) {

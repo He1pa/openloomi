@@ -3,9 +3,17 @@
  * User → QQ Bot → openloomi replies on behalf
  */
 import { sendReplyByBotId } from "@/lib/bots/send-reply";
-import type { IntegrationAccountWithBot } from "@/lib/db/queries";
+import {
+  type IntegrationAccountWithBot,
+  getUserInsightSettings,
+} from "@/lib/db/queries";
 import { DEFAULT_AI_MODEL, AI_PROXY_BASE_URL } from "@/lib/env/constants";
-import { handleAgentRuntime } from "@/lib/ai/runtime/shared";
+import {
+  handleAgentRuntime,
+  formatCatchAllErrorForUser,
+  formatInsufficientAnswerForUser,
+} from "@/lib/ai/runtime/shared";
+import { resolveAgentLanguage } from "@/lib/insights/resolve-language";
 import { QQBotConversationStore } from "@openloomi/integrations/qqbot";
 
 /** Reply target: openid for DM, group_openid for group chat */
@@ -90,12 +98,17 @@ export async function handleQQInboundMessage(
       recipient,
     );
 
+    const runtimeInsightSettings = await getUserInsightSettings(userId).catch(
+      () => null,
+    );
+    const runtimeUserLanguage = resolveAgentLanguage(runtimeInsightSettings);
     await handleAgentRuntime(
       prompt,
       {
         userId,
         conversation: conversationHistory,
         stream: false,
+        language: runtimeUserLanguage,
         ...(token && {
           modelConfig: {
             apiKey: token,
@@ -121,7 +134,7 @@ export async function handleQQInboundMessage(
     );
 
     const toSend =
-      answer || "Insufficient information to answer, please try again later.";
+      answer || formatInsufficientAnswerForUser("qqbot", runtimeUserLanguage);
     await sendReplyByBotId({
       id: bot.id,
       userId,
@@ -132,12 +145,15 @@ export async function handleQQInboundMessage(
   } catch (error) {
     console.error("[QQBot] Failed to process inbound message:", error);
     try {
+      const insightSettings = await getUserInsightSettings(userId).catch(
+        () => null,
+      );
+      const userLanguage = resolveAgentLanguage(insightSettings);
       await sendReplyByBotId({
         id: bot.id,
         userId,
         recipients: [recipient],
-        message:
-          "An error occurred while processing your message, please try again later.",
+        message: formatCatchAllErrorForUser("qqbot", error, userLanguage),
         withAppSuffix: false,
       });
     } catch (e) {
