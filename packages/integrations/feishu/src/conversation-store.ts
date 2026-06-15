@@ -17,8 +17,9 @@ import {
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-function getAppMemoryDir(): string {
-  return join(homedir(), ".openloomi", "data", "memory");
+function getAppMemoryDir(userId?: string): string {
+  const base = join(homedir(), ".openloomi", "data", "memory");
+  return userId ? join(base, userId) : base;
 }
 
 type FeishuDomain = "feishu" | "lark";
@@ -96,12 +97,13 @@ class FeishuConversationStore {
   private readonly sessionScope: string;
 
   constructor(
+    userId: string,
     domain: FeishuDomain = "feishu",
     memoryDir?: string,
     sessionScope?: string,
   ) {
     this.domain = domain;
-    this.memoryDir = memoryDir ?? getAppMemoryDir();
+    this.memoryDir = memoryDir ?? getAppMemoryDir(userId);
     this.sessionsDir = join(this.memoryDir, "channels", this.domain);
     this.sessionScope =
       sessionScope && sessionScope.trim().length > 0

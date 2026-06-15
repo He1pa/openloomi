@@ -45,21 +45,13 @@ function isImageMessage(message: Message): message is Image {
   );
 }
 
-/**
- * Convert openloomi Messages to Feishu-sendable text (merge multiple segments into one, images temporarily as placeholders or skipped)
- */
-function messagesToFeishuText(messages: Messages): string {
-  const parts: string[] = [];
-  for (const m of messages) {
-    if (isPlainText(m)) {
-      parts.push(m);
-    } else if (isImageMessage(m)) {
-      parts.push("[Image]");
-    } else {
-      parts.push("[Content]");
-    }
-  }
-  return parts.join("\n").trim() || "";
+function httpStatusError(
+  message: string,
+  status: number,
+): Error & {
+  status: number;
+} {
+  return Object.assign(new Error(message), { status });
 }
 
 type FeishuMessagePayload = {
@@ -97,6 +89,28 @@ function buildFeishuPayloads(text: string): FeishuMessagePayload[] {
   });
 
   return payloads;
+}
+
+function assertFeishuMessageCreateSucceeded(
+  response: unknown,
+  operation: string,
+  msgType: string,
+): void {
+  if (!response || typeof response !== "object") return;
+  const result = response as {
+    code?: number;
+    msg?: string;
+    message?: string;
+  };
+  if (typeof result.code !== "number" || result.code === 0) return;
+
+  const detail = result.msg ?? result.message ?? "unknown error";
+  throw Object.assign(
+    new Error(
+      `[FeishuAdapter] ${operation} failed msg_type=${msgType} code=${result.code}: ${detail}`,
+    ),
+    { code: String(result.code) },
+  );
 }
 
 /**
@@ -314,8 +328,9 @@ export class FeishuAdapter extends MessagePlatformAdapter {
 
     if (!resp.ok || !json?.tenant_access_token) {
       const msg = json?.msg ?? `HTTP ${resp.status}`;
-      throw new Error(
+      throw httpStatusError(
         `[FeishuAdapter] Failed to get tenant_access_token: ${msg}`,
+        resp.status,
       );
     }
 
@@ -347,11 +362,184 @@ export class FeishuAdapter extends MessagePlatformAdapter {
       },
     });
     const json = (await resp.json().catch(() => null)) as any;
+
     if (!resp.ok || (typeof json?.code === "number" && json.code !== 0)) {
       const msg = json?.msg ?? `HTTP ${resp.status}`;
-      throw new Error(`[FeishuAdapter] GET ${path} failed: ${msg}`);
+      throw httpStatusError(
+        `[FeishuAdapter] GET ${path} failed: ${msg}`,
+        resp.status,
+      );
     }
     return json as T;
+  }
+
+  /**
+   * Upload a local image file to Feishu and get the image_key
+   * @param imagePath Absolute path to the local image file
+   * @returns Feishu image_key for sending image messages
+   */
+  async uploadImage(imagePath: string): Promise<string> {
+    const token = await this.getTenantAccessToken();
+
+    // Read file from local path (Tauri mode: absolute path)
+    const fs = await import("node:fs/promises");
+    await fs.access(imagePath).catch(() => {
+      throw new Error(`[FeishuAdapter] Image file not found: ${imagePath}`);
+    });
+    const fileBuffer = await fs.readFile(imagePath);
+
+    // Check file size (Feishu limit: 20MB)
+    const MAX_SIZE = 20 * 1024 * 1024;
+    if (fileBuffer.length > MAX_SIZE) {
+      throw new Error(
+        `[FeishuAdapter] Image too large (${fileBuffer.length} bytes), max 20MB`,
+      );
+    }
+
+    // Determine content type from extension
+    const ext = imagePath.split(".").pop()?.toLowerCase() ?? "";
+    const contentTypeMap: Record<string, string> = {
+      png: "image/png",
+      jpg: "image/jpeg",
+      jpeg: "image/jpeg",
+      gif: "image/gif",
+      webp: "image/webp",
+    };
+    const contentType = contentTypeMap[ext] ?? "image/png";
+    const filename = imagePath.split("/").pop() ?? "image.png";
+
+    // Use FormData API for multipart upload (compatible with Tauri/browser environments)
+    const formData = new FormData();
+    formData.append("image_type", "message");
+    formData.append(
+      "image",
+      new Blob([fileBuffer], { type: contentType }),
+      filename,
+    );
+
+    const resp = await fetch(`${this.openApisBase}/im/v1/images`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+      body: formData,
+    });
+
+    const json = (await resp.json().catch(() => null)) as {
+      code?: number;
+      msg?: string;
+      data?: { image_key?: string };
+    } | null;
+
+    if (!resp.ok || json?.code !== 0 || !json?.data?.image_key) {
+      const msg = json?.msg ?? `HTTP ${resp.status}`;
+      throw httpStatusError(
+        `[FeishuAdapter] uploadImage failed: ${msg}`,
+        resp.status,
+      );
+    }
+
+    if (DEBUG) {
+      console.log(
+        `[FeishuAdapter] Uploaded image ${imagePath} -> ${json.data.image_key}`,
+      );
+    }
+    return json.data.image_key;
+  }
+
+  /**
+   * Send an image message using the image_key from uploadImage
+   */
+  private async sendImageMessage(
+    receiveId: string,
+    imageKey: string,
+    rootId?: string,
+  ): Promise<void> {
+    const client = this.getClient();
+    const response = await (client.im.v1.message.create as any)({
+      params: { receive_id_type: "chat_id" },
+      data: {
+        receive_id: receiveId,
+        msg_type: "image",
+        content: JSON.stringify({ image_key: imageKey }),
+        ...(rootId ? { root_id: rootId } : {}),
+      },
+    });
+    assertFeishuMessageCreateSucceeded(response, "sendImageMessage", "image");
+
+    if (DEBUG) {
+      console.log(`[FeishuAdapter] Sent image to ${receiveId}`);
+    }
+  }
+
+  /**
+   * Separate messages into text and image groups
+   */
+  private separateMessages(messages: Messages): {
+    texts: string[];
+    images: Image[];
+  } {
+    const texts: string[] = [];
+    const images: Image[] = [];
+
+    for (const m of messages) {
+      if (isPlainText(m)) {
+        texts.push(m);
+      } else if (isImageMessage(m)) {
+        images.push(m);
+      } else {
+        texts.push("[Content]");
+      }
+    }
+
+    return { texts, images };
+  }
+
+  /**
+   * Send text messages as a single Feishu text/post payload
+   */
+  private async sendTextPayload(
+    receiveId: string,
+    text: string,
+    rootId?: string,
+  ): Promise<void> {
+    const client = this.getClient();
+    const payloads = buildFeishuPayloads(text);
+    let lastError: unknown;
+
+    for (const payload of payloads) {
+      try {
+        const response = await (client.im.v1.message.create as any)({
+          params: { receive_id_type: "chat_id" },
+          data: {
+            receive_id: receiveId,
+            msg_type: payload.msg_type,
+            content: payload.content,
+            ...(rootId ? { root_id: rootId } : {}),
+          },
+        });
+        assertFeishuMessageCreateSucceeded(
+          response,
+          "sendTextPayload",
+          payload.msg_type,
+        );
+        if (DEBUG) {
+          console.log(
+            `[FeishuAdapter] Sent text to ${receiveId} as ${payload.msg_type}`,
+          );
+        }
+        return;
+      } catch (err) {
+        lastError = err;
+        if (DEBUG) {
+          console.warn(
+            `[FeishuAdapter] Text payload failed, trying next: ${err}`,
+          );
+        }
+      }
+    }
+
+    throw lastError ?? new Error("Failed to send text message");
   }
 
   private async feishuGetBinary(
@@ -373,13 +561,14 @@ export class FeishuAdapter extends MessagePlatformAdapter {
       },
     });
     if (!resp.ok) {
-      throw new Error(
+      throw httpStatusError(
         `[FeishuAdapter] GET(binary) ${path} failed: HTTP ${resp.status}`,
+        resp.status,
       );
     }
     const mimeType = resp.headers.get("content-type") || "image/jpeg";
     const ab = await resp.arrayBuffer();
-    const data = Buffer.from(ab).toString("base64");
+    const data = (globalThis.Buffer ?? Buffer).from(ab).toString("base64");
     return { data, mimeType };
   }
 
@@ -392,43 +581,37 @@ export class FeishuAdapter extends MessagePlatformAdapter {
     id: string,
     messages: Messages,
   ): Promise<void> {
-    const text = messagesToFeishuText(messages);
-    if (!text) {
-      if (DEBUG) console.log("[FeishuAdapter] No text content, skipping send");
-      return;
-    }
-    const client = this.getClient();
-    const payloads = buildFeishuPayloads(text);
-    if (payloads.length === 0) return;
-    let lastError: unknown;
-    for (const payload of payloads) {
-      try {
-        await client.im.v1.message.create({
-          params: { receive_id_type: "chat_id" },
-          data: {
-            receive_id: id,
-            msg_type: payload.msg_type,
-            content: payload.content,
-          },
-        });
-        if (DEBUG) {
-          console.log(
-            `[FeishuAdapter] Sent to chat_id=${id} msg_type=${payload.msg_type}`,
-          );
-        }
-        return;
-      } catch (err) {
-        lastError = err;
-        if (DEBUG) {
-          console.warn(
-            `[FeishuAdapter] Send failed with msg_type=${payload.msg_type}, trying fallback`,
-            err,
-          );
+    await this.runWithAdapterError("sendMessages", async () => {
+      const { texts, images } = this.separateMessages(messages);
+
+      // Send text messages if any
+      if (texts.length > 0) {
+        const text = texts.join("\n").trim();
+        if (text) {
+          await this.sendTextPayload(id, text);
         }
       }
-    }
-    console.error("[FeishuAdapter] Send failed:", lastError);
-    throw lastError;
+
+      // Send image messages if any
+      for (const image of images) {
+        const imagePath = image.path;
+        if (!imagePath) {
+          console.warn(
+            "[FeishuAdapter] Image has no local path, skipping:",
+            image.url,
+          );
+          continue;
+        }
+
+        try {
+          const imageKey = await this.uploadImage(imagePath);
+          await this.sendImageMessage(id, imageKey);
+        } catch (err) {
+          console.error("[FeishuAdapter] Failed to send image:", err);
+          // Continue sending other images even if one fails
+        }
+      }
+    });
   }
 
   async replyMessages(
@@ -436,56 +619,62 @@ export class FeishuAdapter extends MessagePlatformAdapter {
     messages: Messages,
     _quoteOrigin = false,
   ): Promise<void> {
-    const chatId =
-      event.sourcePlatformObject?.event?.message?.chat_id ??
-      event.sourcePlatformObject?.message?.chat_id;
-    const messageId =
-      event.sourcePlatformObject?.event?.message?.message_id ??
-      event.sourcePlatformObject?.message?.message_id;
-    if (!chatId) {
-      await this.sendMessages(
-        event.targetType,
-        (event.sender as Friend).id as string,
-        messages,
-      );
-      return;
-    }
-    const text = messagesToFeishuText(messages);
-    if (!text) return;
-    const client = this.getClient();
-    const payloads = buildFeishuPayloads(text);
-    if (payloads.length === 0) return;
-    let lastError: unknown;
-    for (const payload of payloads) {
-      try {
-        // root_id field is not yet exposed in SDK types, using type assertion to bypass constraint to support "reply to specific message"
-        await (client.im.v1.message.create as any)({
-          params: { receive_id_type: "chat_id" },
-          data: {
-            receive_id: chatId,
-            msg_type: payload.msg_type,
-            content: payload.content,
-            root_id: messageId ?? undefined,
-          },
-        });
-        if (DEBUG) {
-          console.log(
-            `[FeishuAdapter] Replied chat_id=${chatId} msg_type=${payload.msg_type}`,
-          );
-        }
+    await this.runWithAdapterError("replyMessages", async () => {
+      const chatId =
+        event.sourcePlatformObject?.event?.message?.chat_id ??
+        event.sourcePlatformObject?.message?.chat_id;
+      const messageId =
+        event.sourcePlatformObject?.event?.message?.message_id ??
+        event.sourcePlatformObject?.message?.message_id;
+      if (!chatId) {
+        await this.sendMessages(
+          event.targetType,
+          (event.sender as Friend).id as string,
+          messages,
+        );
         return;
-      } catch (err) {
-        lastError = err;
-        if (DEBUG) {
-          console.warn(
-            `[FeishuAdapter] Reply failed with msg_type=${payload.msg_type}, trying fallback`,
-            err,
-          );
+      }
+
+      const { texts, images } = this.separateMessages(messages);
+      let lastError: unknown;
+
+      // Send text messages if any
+      if (texts.length > 0) {
+        const text = texts.join("\n").trim();
+        if (text) {
+          try {
+            await this.sendTextPayload(chatId, text, messageId);
+          } catch (err) {
+            lastError = err;
+          }
         }
       }
-    }
-    console.error("[FeishuAdapter] Reply failed:", lastError);
-    throw lastError;
+
+      // Send image messages if any
+      for (const image of images) {
+        const imagePath = image.path;
+        if (!imagePath) {
+          console.warn(
+            "[FeishuAdapter] Reply image has no local path, skipping:",
+            image.url,
+          );
+          continue;
+        }
+
+        try {
+          const imageKey = await this.uploadImage(imagePath);
+          await this.sendImageMessage(chatId, imageKey, messageId);
+        } catch (err) {
+          console.error("[FeishuAdapter] Failed to send reply image:", err);
+          lastError = err;
+          // Continue sending other images even if one fails
+        }
+      }
+
+      if (lastError) {
+        throw lastError;
+      }
+    });
   }
 
   /**

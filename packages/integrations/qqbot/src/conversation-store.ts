@@ -16,8 +16,9 @@ import {
 import { join } from "node:path";
 import { homedir } from "node:os";
 
-function getAppMemoryDir(): string {
-  return join(homedir(), ".openloomi", "data", "memory");
+function getAppMemoryDir(userId?: string): string {
+  const base = join(homedir(), ".openloomi", "data", "memory");
+  return userId ? join(base, userId) : base;
 }
 
 interface ConversationMessage {
@@ -33,8 +34,8 @@ class QQBotConversationStore {
   private loadedPairs = new Set<string>();
   private readonly memoryDir: string;
 
-  constructor(memoryDir?: string) {
-    this.memoryDir = memoryDir ?? getAppMemoryDir();
+  constructor(userId: string, memoryDir?: string) {
+    this.memoryDir = memoryDir ?? getAppMemoryDir(userId);
   }
 
   private pairKey(userKey: string, accountId: string): string {

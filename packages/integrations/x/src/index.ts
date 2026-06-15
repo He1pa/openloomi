@@ -378,12 +378,18 @@ export class XAdapter {
   /**
    * Post a new tweet (text only)
    */
-  async postTweet(text: string): Promise<{ id: string; text: string }> {
+  async postTweet(
+    text: string,
+    quoteTweetId?: string,
+  ): Promise<{ id: string; text: string }> {
     console.log(
       `[X postTweet] userId=${this.userId} username=${this.username} botId=${this.botId}`,
     );
     return this.withTokenRefresh(async () => {
-      const result = await this.client.posts.create({ text });
+      const result = await this.client.posts.create({
+        text,
+        ...(quoteTweetId && { quoteTweetId }),
+      });
       if (result.errors?.length) {
         const err = result.errors[0];
         console.error(`[X postTweet] failed: ${JSON.stringify(err)}`);
@@ -406,11 +412,13 @@ export class XAdapter {
   async postTweetWithMedia(
     text: string,
     mediaIds: string[],
+    quoteTweetId?: string,
   ): Promise<{ id: string; text: string }> {
     return this.withTokenRefresh(async () => {
       const result = await this.client.posts.create({
         text,
         media: { media_ids: mediaIds },
+        ...(quoteTweetId && { quoteTweetId }),
       });
       if (result.errors?.length) {
         const err = result.errors[0];
@@ -433,11 +441,831 @@ export class XAdapter {
     }, "posts.create");
   }
 
+  // ============ Media Operations ============
+
   /**
    * Upload media to X and return media ID
    */
   async uploadMedia(mediaUrl: string): Promise<string> {
-    return mediaUrl;
+    return this.withTokenRefresh(async () => {
+      // Download the media file from the URL
+      const response = await fetch(mediaUrl);
+      if (!response.ok) {
+        throw new AppError(
+          "bad_request:bot",
+          `Failed to download media from ${mediaUrl}: ${response.status}`,
+        );
+      }
+      const buffer = await response.arrayBuffer();
+      const contentType =
+        response.headers.get("content-type") || "application/octet-stream";
+
+      // Determine media category based on content type
+      let category: "tweet_image" | "tweet_video" | "tweet_gif" = "tweet_image";
+      if (contentType.startsWith("video/")) {
+        category = "tweet_video";
+      } else if (contentType.startsWith("image/gif")) {
+        category = "tweet_gif";
+      }
+
+      // Upload using SDK
+      const result = await this.client.media.upload({
+        file: Buffer.from(buffer),
+        mimeType: contentType,
+        category,
+      });
+
+      if (result.errors?.length) {
+        const err = result.errors[0];
+        console.error(
+          `[Bot ${this.botId}] X uploadMedia failed: ${JSON.stringify(err)}`,
+        );
+        throw new AppError(
+          "bad_request:bot",
+          `X uploadMedia failed: ${err.detail ?? JSON.stringify(err)}`,
+        );
+      }
+
+      const data = result.data as { media_id_string?: string } | undefined;
+      if (!data?.media_id_string) {
+        throw new AppError(
+          "bad_request:bot",
+          "X uploadMedia returned no media_id",
+        );
+      }
+      return data.media_id_string;
+    }, "media.upload");
+  }
+
+  // ============ Tweet Operations (Extended) ============
+
+  /**
+   * Get a tweet by ID
+   */
+  async getTweetById(tweetId: string): Promise<{
+    id: string;
+    text: string;
+    authorId: string;
+    createdAt: string;
+    likeCount?: number;
+    retweetCount?: number;
+    impressionCount?: number;
+  }> {
+    return this.withTokenRefresh(async () => {
+      const result = await this.client.posts.getById(tweetId, {
+        tweetFields: ["createdAt", "authorId", "publicMetrics"],
+      });
+      const tweet = result.data as any;
+      if (!tweet) {
+        throw new AppError("bad_request:bot", "Tweet not found");
+      }
+      return {
+        id: tweet.id,
+        text: tweet.text,
+        authorId: tweet.authorId ?? tweet.author_id ?? "",
+        createdAt: tweet.createdAt ?? tweet.created_at ?? "",
+        likeCount:
+          tweet.publicMetrics?.likeCount ?? tweet.public_metrics?.like_count,
+        retweetCount:
+          tweet.publicMetrics?.retweetCount ??
+          tweet.public_metrics?.retweet_count,
+        impressionCount:
+          tweet.publicMetrics?.impressionCount ??
+          tweet.public_metrics?.impression_count,
+      };
+    }, "posts.getById");
+  }
+
+  /**
+   * Delete a tweet
+   */
+  async deleteTweet(tweetId: string): Promise<{ deleted: boolean }> {
+    return this.withTokenRefresh(async () => {
+      const result = await this.client.posts.delete(tweetId);
+      if (result.errors?.length) {
+        const err = result.errors[0];
+        console.error(
+          `[Bot ${this.botId}] X deleteTweet failed: ${JSON.stringify(err)}`,
+        );
+        throw new AppError(
+          "bad_request:bot",
+          `X deleteTweet failed: ${err.detail ?? JSON.stringify(err)}`,
+        );
+      }
+      return { deleted: true };
+    }, "posts.delete");
+  }
+
+  /**
+   * Hide a reply to a tweet
+   */
+  async hideReply(tweetId: string): Promise<{ hidden: boolean }> {
+    return this.withTokenRefresh(async () => {
+      await this.client.posts.hideReply(tweetId, { hidden: true });
+      return { hidden: true };
+    }, "posts.hideReply");
+  }
+
+  /**
+   * Unhide a reply to a tweet
+   */
+  async unhideReply(tweetId: string): Promise<{ hidden: boolean }> {
+    return this.withTokenRefresh(async () => {
+      await this.client.posts.hideReply(tweetId, { hidden: false });
+      return { hidden: false };
+    }, "posts.hideReply");
+  }
+
+  /**
+   * Get users who liked a tweet
+   */
+  async getLikingUsers(
+    tweetId: string,
+    maxResults = 20,
+  ): Promise<
+    Array<{
+      id: string;
+      username: string;
+      name: string;
+    }>
+  > {
+    return this.withTokenRefresh(async () => {
+      const result = await this.client.posts.getLikingUsers(tweetId, {
+        maxResults,
+        userFields: ["username", "name"],
+      });
+      return (result.data ?? []).map((user: any) => ({
+        id: user.id,
+        username: user.username ?? "",
+        name: user.name ?? "",
+      }));
+    }, "posts.getLikingUsers");
+  }
+
+  /**
+   * Get users who reposted a tweet
+   */
+  async getReposts(
+    tweetId: string,
+    maxResults = 20,
+  ): Promise<
+    Array<{
+      id: string;
+      username: string;
+      name: string;
+    }>
+  > {
+    return this.withTokenRefresh(async () => {
+      const result = await this.client.posts.getReposts(tweetId, {
+        maxResults,
+        userFields: ["username", "name"],
+      });
+      return (result.data ?? []).map((user: any) => ({
+        id: user.id,
+        username: user.username ?? "",
+        name: user.name ?? "",
+      }));
+    }, "posts.getReposts");
+  }
+
+  /**
+   * Get quoted tweet
+   */
+  async getQuoted(
+    tweetId: string,
+    maxResults = 20,
+  ): Promise<
+    Array<{
+      id: string;
+      text: string;
+      authorId: string;
+      createdAt: string;
+    }>
+  > {
+    return this.withTokenRefresh(async () => {
+      const result = await this.client.posts.getQuoted(tweetId, {
+        maxResults,
+        tweetFields: ["createdAt", "authorId"],
+      });
+      return (result.data ?? []).map((tweet: any) => ({
+        id: tweet.id,
+        text: tweet.text,
+        authorId: tweet.authorId ?? tweet.author_id ?? "",
+        createdAt: tweet.createdAt ?? tweet.created_at ?? "",
+      }));
+    }, "posts.getQuoted");
+  }
+
+  // ============ User Operations ============
+
+  /**
+   * Follow a user
+   */
+  async followUser(userId: string): Promise<{ following: boolean }> {
+    return this.withTokenRefresh(async () => {
+      const result = await this.client.users.followUser(this.userId, {
+        targetUserId: userId,
+      });
+      if (result.errors?.length) {
+        const err = result.errors[0];
+        console.error(
+          `[Bot ${this.botId}] X followUser failed: ${JSON.stringify(err)}`,
+        );
+        throw new AppError(
+          "bad_request:bot",
+          `X followUser failed: ${err.detail ?? JSON.stringify(err)}`,
+        );
+      }
+      return { following: true };
+    }, "users.followUser");
+  }
+
+  /**
+   * Unfollow a user
+   */
+  async unfollowUser(userId: string): Promise<{ following: boolean }> {
+    return this.withTokenRefresh(async () => {
+      const result = await this.client.users.unfollowUser(this.userId, userId);
+      if (result.errors?.length) {
+        const err = result.errors[0];
+        console.error(
+          `[Bot ${this.botId}] X unfollowUser failed: ${JSON.stringify(err)}`,
+        );
+        throw new AppError(
+          "bad_request:bot",
+          `X unfollowUser failed: ${err.detail ?? JSON.stringify(err)}`,
+        );
+      }
+      return { following: false };
+    }, "users.unfollowUser");
+  }
+
+  /**
+   * Mute a user
+   */
+  async muteUser(userId: string): Promise<{ muting: boolean }> {
+    return this.withTokenRefresh(async () => {
+      const result = await this.client.users.muteUser(this.userId, {
+        targetUserId: userId,
+      });
+      if (result.errors?.length) {
+        const err = result.errors[0];
+        console.error(
+          `[Bot ${this.botId}] X muteUser failed: ${JSON.stringify(err)}`,
+        );
+        throw new AppError(
+          "bad_request:bot",
+          `X muteUser failed: ${err.detail ?? JSON.stringify(err)}`,
+        );
+      }
+      return { muting: true };
+    }, "users.muteUser");
+  }
+
+  /**
+   * Unmute a user
+   */
+  async unmuteUser(userId: string): Promise<{ muting: boolean }> {
+    return this.withTokenRefresh(async () => {
+      const result = await this.client.users.unmuteUser(this.userId, userId);
+      if (result.errors?.length) {
+        const err = result.errors[0];
+        console.error(
+          `[Bot ${this.botId}] X unmuteUser failed: ${JSON.stringify(err)}`,
+        );
+        throw new AppError(
+          "bad_request:bot",
+          `X unmuteUser failed: ${err.detail ?? JSON.stringify(err)}`,
+        );
+      }
+      return { muting: false };
+    }, "users.unmuteUser");
+  }
+
+  /**
+   * Get followers of a user
+   */
+  async getFollowers(
+    userId: string,
+    maxResults = 20,
+  ): Promise<
+    Array<{
+      id: string;
+      username: string;
+      name: string;
+      followersCount?: number;
+      followingCount?: number;
+    }>
+  > {
+    return this.withTokenRefresh(async () => {
+      const result = await this.client.users.getFollowers(userId, {
+        maxResults,
+        userFields: ["username", "name", "publicMetrics"],
+      });
+      return (result.data ?? []).map((user: any) => ({
+        id: user.id,
+        username: user.username ?? "",
+        name: user.name ?? "",
+        followersCount:
+          user.publicMetrics?.followersCount ??
+          user.public_metrics?.followers_count,
+        followingCount:
+          user.publicMetrics?.followingCount ??
+          user.public_metrics?.following_count,
+      }));
+    }, "users.getFollowers");
+  }
+
+  /**
+   * Get users that a user is following
+   */
+  async getFollowing(
+    userId: string,
+    maxResults = 20,
+  ): Promise<
+    Array<{
+      id: string;
+      username: string;
+      name: string;
+      followersCount?: number;
+      followingCount?: number;
+    }>
+  > {
+    return this.withTokenRefresh(async () => {
+      const result = await this.client.users.getFollowing(userId, {
+        maxResults,
+        userFields: ["username", "name", "publicMetrics"],
+      });
+      return (result.data ?? []).map((user: any) => ({
+        id: user.id,
+        username: user.username ?? "",
+        name: user.name ?? "",
+        followersCount:
+          user.publicMetrics?.followersCount ??
+          user.public_metrics?.followers_count,
+        followingCount:
+          user.publicMetrics?.followingCount ??
+          user.public_metrics?.following_count,
+      }));
+    }, "users.getFollowing");
+  }
+
+  /**
+   * Search for users
+   */
+  async searchUsers(
+    query: string,
+    maxResults = 20,
+  ): Promise<
+    Array<{
+      id: string;
+      username: string;
+      name: string;
+      bio?: string;
+    }>
+  > {
+    return this.withTokenRefresh(async () => {
+      const result = await this.client.users.search(query, {
+        maxResults,
+        userFields: ["username", "name", "description"],
+      });
+      return (result.data ?? []).map((user: any) => ({
+        id: user.id,
+        username: user.username ?? "",
+        name: user.name ?? "",
+        bio: user.description,
+      }));
+    }, "users.search");
+  }
+
+  /**
+   * Get user by username
+   */
+  async getUserByUsername(username: string): Promise<{
+    id: string;
+    username: string;
+    name: string;
+    bio?: string;
+    followersCount: number;
+    followingCount: number;
+    tweetCount: number;
+  }> {
+    return this.withTokenRefresh(async () => {
+      const result = await this.client.users.getByUsername(username, {
+        userFields: ["username", "name", "description", "publicMetrics"],
+      });
+      const user = result.data as any;
+      if (!user) {
+        throw new AppError("bad_request:bot", "User not found");
+      }
+      return {
+        id: user.id,
+        username: user.username ?? "",
+        name: user.name ?? "",
+        bio: user.description,
+        followersCount:
+          user.publicMetrics?.followersCount ??
+          user.public_metrics?.followers_count ??
+          0,
+        followingCount:
+          user.publicMetrics?.followingCount ??
+          user.public_metrics?.following_count ??
+          0,
+        tweetCount:
+          user.publicMetrics?.tweetCount ??
+          user.public_metrics?.tweet_count ??
+          0,
+      };
+    }, "users.getByUsername");
+  }
+
+  /**
+   * Get mentions of the authenticated user
+   */
+  async getMentions(maxResults = 20): Promise<
+    Array<{
+      id: string;
+      text: string;
+      authorId: string;
+      createdAt: string;
+    }>
+  > {
+    return this.withTokenRefresh(async () => {
+      const result = await this.client.users.getMentions(this.userId, {
+        maxResults,
+        tweetFields: ["createdAt", "authorId"],
+      });
+      return (result.data ?? []).map((tweet: any) => ({
+        id: tweet.id,
+        text: tweet.text,
+        authorId: tweet.authorId ?? tweet.author_id ?? "",
+        createdAt: tweet.createdAt ?? tweet.created_at ?? "",
+      }));
+    }, "users.getMentions");
+  }
+
+  // ============ List Operations ============
+
+  /**
+   * Get a list by ID
+   */
+  async getList(listId: string): Promise<{
+    id: string;
+    name: string;
+    description?: string;
+    ownerId: string;
+    memberCount?: number;
+    followerCount?: number;
+    isPrivate?: boolean;
+  }> {
+    return this.withTokenRefresh(async () => {
+      const result = await this.client.lists.getById(listId, {
+        listFields: ["ownerId", "memberCount", "followerCount", "isPrivate"],
+      });
+      const list = result.data as any;
+      if (!list) {
+        throw new AppError("bad_request:bot", "List not found");
+      }
+      return {
+        id: list.id,
+        name: list.name ?? "",
+        description: list.description,
+        ownerId: list.ownerId ?? list.owner_id ?? "",
+        memberCount: list.memberCount ?? list.member_count,
+        followerCount: list.followerCount ?? list.follower_count,
+        isPrivate: list.isPrivate ?? list.is_private,
+      };
+    }, "lists.getById");
+  }
+
+  /**
+   * Get lists owned by a user
+   */
+  async getOwnedLists(
+    userId: string,
+    maxResults = 20,
+  ): Promise<
+    Array<{
+      id: string;
+      name: string;
+      description?: string;
+      memberCount?: number;
+      followerCount?: number;
+    }>
+  > {
+    return this.withTokenRefresh(async () => {
+      const result = await this.client.users.getOwnedLists(userId, {
+        maxResults,
+        listFields: ["memberCount", "followerCount"],
+      });
+      return (result.data ?? []).map((list: any) => ({
+        id: list.id,
+        name: list.name ?? "",
+        description: list.description,
+        memberCount: list.memberCount ?? list.member_count,
+        followerCount: list.followerCount ?? list.follower_count,
+      }));
+    }, "users.getOwnedLists");
+  }
+
+  /**
+   * Follow a list
+   */
+  async followList(listId: string): Promise<{ following: boolean }> {
+    return this.withTokenRefresh(async () => {
+      const result = await this.client.users.followList(this.userId, {
+        listId,
+      });
+      if (result.errors?.length) {
+        const err = result.errors[0];
+        console.error(
+          `[Bot ${this.botId}] X followList failed: ${JSON.stringify(err)}`,
+        );
+        throw new AppError(
+          "bad_request:bot",
+          `X followList failed: ${err.detail ?? JSON.stringify(err)}`,
+        );
+      }
+      return { following: true };
+    }, "users.followList");
+  }
+
+  /**
+   * Unfollow a list
+   */
+  async unfollowList(listId: string): Promise<{ following: boolean }> {
+    return this.withTokenRefresh(async () => {
+      const result = await this.client.users.unfollowList(this.userId, listId);
+      if (result.errors?.length) {
+        const err = result.errors[0];
+        console.error(
+          `[Bot ${this.botId}] X unfollowList failed: ${JSON.stringify(err)}`,
+        );
+        throw new AppError(
+          "bad_request:bot",
+          `X unfollowList failed: ${err.detail ?? JSON.stringify(err)}`,
+        );
+      }
+      return { following: false };
+    }, "users.unfollowList");
+  }
+
+  /**
+   * Pin a list
+   */
+  async pinList(listId: string): Promise<{ pinned: boolean }> {
+    return this.withTokenRefresh(async () => {
+      const result = await this.client.users.pinList(this.userId, {
+        listId,
+      });
+      if (result.errors?.length) {
+        const err = result.errors[0];
+        console.error(
+          `[Bot ${this.botId}] X pinList failed: ${JSON.stringify(err)}`,
+        );
+        throw new AppError(
+          "bad_request:bot",
+          `X pinList failed: ${err.detail ?? JSON.stringify(err)}`,
+        );
+      }
+      return { pinned: true };
+    }, "users.pinList");
+  }
+
+  /**
+   * Unpin a list
+   */
+  async unpinList(listId: string): Promise<{ pinned: boolean }> {
+    return this.withTokenRefresh(async () => {
+      const result = await this.client.users.unpinList(this.userId, listId);
+      if (result.errors?.length) {
+        const err = result.errors[0];
+        console.error(
+          `[Bot ${this.botId}] X unpinList failed: ${JSON.stringify(err)}`,
+        );
+        throw new AppError(
+          "bad_request:bot",
+          `X unpinList failed: ${err.detail ?? JSON.stringify(err)}`,
+        );
+      }
+      return { pinned: false };
+    }, "users.unpinList");
+  }
+
+  // ============ Space Operations ============
+
+  /**
+   * Get a space by ID
+   */
+  async getSpace(spaceId: string): Promise<{
+    id: string;
+    title?: string;
+    state: string;
+    hostId?: string;
+    participantCount?: number;
+    subscriberCount?: number;
+  }> {
+    return this.withTokenRefresh(async () => {
+      const result = await this.client.spaces.getById(spaceId, {
+        spaceFields: ["hostId", "participantCount", "subscriberCount"],
+      });
+      const space = result.data as any;
+      if (!space) {
+        throw new AppError("bad_request:bot", "Space not found");
+      }
+      return {
+        id: space.id,
+        title: space.title,
+        state: space.state ?? "",
+        hostId: space.hostId ?? space.host_id,
+        participantCount: space.participantCount ?? space.participant_count,
+        subscriberCount: space.subscriberCount ?? space.subscriber_count,
+      };
+    }, "spaces.getById");
+  }
+
+  /**
+   * Get spaces by creator IDs
+   */
+  async getSpacesByCreator(
+    creatorIds: string[],
+    maxResults = 20,
+  ): Promise<
+    Array<{
+      id: string;
+      title?: string;
+      state: string;
+      hostId?: string;
+    }>
+  > {
+    return this.withTokenRefresh(async () => {
+      const result = await this.client.spaces.getByCreatorIds(creatorIds, {
+        maxResults,
+        spaceFields: ["hostId"],
+      });
+      return (result.data ?? []).map((space: any) => ({
+        id: space.id,
+        title: space.title,
+        state: space.state ?? "",
+        hostId: space.hostId ?? space.host_id,
+      }));
+    }, "spaces.getByCreatorIds");
+  }
+
+  /**
+   * Get tweets from a space
+   */
+  async getSpaceTweets(
+    spaceId: string,
+    maxResults = 20,
+  ): Promise<
+    Array<{
+      id: string;
+      text: string;
+      authorId: string;
+      createdAt: string;
+    }>
+  > {
+    return this.withTokenRefresh(async () => {
+      const result = await this.client.spaces.getPosts(spaceId, {
+        maxResults,
+        tweetFields: ["createdAt", "authorId"],
+      });
+      return (result.data ?? []).map((tweet: any) => ({
+        id: tweet.id,
+        text: tweet.text,
+        authorId: tweet.authorId ?? tweet.author_id ?? "",
+        createdAt: tweet.createdAt ?? tweet.created_at ?? "",
+      }));
+    }, "spaces.getPosts");
+  }
+
+  // ============ Community Operations ============
+
+  /**
+   * Get a community by ID
+   */
+  async getCommunity(communityId: string): Promise<{
+    id: string;
+    name: string;
+    description?: string;
+    memberCount?: number;
+    isPrivate?: boolean;
+  }> {
+    return this.withTokenRefresh(async () => {
+      const result = await this.client.communities.getById(communityId, {
+        communityFields: ["memberCount", "isPrivate"],
+      });
+      const community = result.data as any;
+      if (!community) {
+        throw new AppError("bad_request:bot", "Community not found");
+      }
+      return {
+        id: community.id,
+        name: community.name ?? "",
+        description: community.description,
+        memberCount: community.memberCount ?? community.member_count,
+        isPrivate: community.isPrivate ?? community.is_private,
+      };
+    }, "communities.getById");
+  }
+
+  // ============ Trends Operations ============
+
+  /**
+   * Get trends by WOEID (Where On Earth ID)
+   */
+  async getTrends(woeid = 1): Promise<
+    Array<{
+      name: string;
+      url?: string;
+      promotedContent?: string;
+      query: string;
+      tweetVolume?: number;
+    }>
+  > {
+    return this.withTokenRefresh(async () => {
+      const result = await this.client.trends.getByWoeid(woeid);
+      return (result.data ?? []).map((trend: any) => ({
+        name: trend.name ?? "",
+        url: trend.url,
+        promotedContent: trend.promotedContent,
+        query: trend.query ?? "",
+        tweetVolume: trend.tweetVolume ?? trend.tweet_volume,
+      }));
+    }, "trends.getByWoeid");
+  }
+
+  // ============ Bookmark Operations ============
+
+  /**
+   * Get user's bookmarks
+   */
+  async getBookmarks(maxResults = 20): Promise<
+    Array<{
+      id: string;
+      text: string;
+      authorId: string;
+      createdAt: string;
+    }>
+  > {
+    return this.withTokenRefresh(async () => {
+      const result = await this.client.users.getBookmarks(this.userId, {
+        maxResults,
+        tweetFields: ["createdAt", "authorId"],
+      });
+      return (result.data ?? []).map((tweet: any) => ({
+        id: tweet.id,
+        text: tweet.text,
+        authorId: tweet.authorId ?? tweet.author_id ?? "",
+        createdAt: tweet.createdAt ?? tweet.created_at ?? "",
+      }));
+    }, "users.getBookmarks");
+  }
+
+  /**
+   * Create a bookmark
+   */
+  async createBookmark(tweetId: string): Promise<{ bookmarked: boolean }> {
+    return this.withTokenRefresh(async () => {
+      const result = await this.client.users.createBookmark(this.userId, {
+        tweetId,
+      });
+      if (result.errors?.length) {
+        const err = result.errors[0];
+        console.error(
+          `[Bot ${this.botId}] X createBookmark failed: ${JSON.stringify(err)}`,
+        );
+        throw new AppError(
+          "bad_request:bot",
+          `X createBookmark failed: ${err.detail ?? JSON.stringify(err)}`,
+        );
+      }
+      return { bookmarked: true };
+    }, "users.createBookmark");
+  }
+
+  /**
+   * Delete a bookmark
+   */
+  async deleteBookmark(tweetId: string): Promise<{ bookmarked: boolean }> {
+    return this.withTokenRefresh(async () => {
+      const result = await this.client.users.deleteBookmark(
+        this.userId,
+        tweetId,
+      );
+      if (result.errors?.length) {
+        const err = result.errors[0];
+        console.error(
+          `[Bot ${this.botId}] X deleteBookmark failed: ${JSON.stringify(err)}`,
+        );
+        throw new AppError(
+          "bad_request:bot",
+          `X deleteBookmark failed: ${err.detail ?? JSON.stringify(err)}`,
+        );
+      }
+      return { bookmarked: false };
+    }, "users.deleteBookmark");
   }
 
   /**
@@ -477,13 +1305,16 @@ export class XAdapter {
       text: string;
       authorId: string;
       createdAt: string;
+      likeCount?: number;
+      retweetCount?: number;
+      impressionCount?: number;
     }>
   > {
     // Twitter API requires max_results between 10 and 100
     const clampedMaxResults = Math.max(10, Math.min(100, maxResults));
     const token = await this.ensureAccessToken();
     const response = await this.client.httpClient.get(
-      `https://api.twitter.com/2/tweets/search/recent?query=${encodeURIComponent(query)}&max_results=${clampedMaxResults}&tweet.fields=created_at,author_id`,
+      `https://api.twitter.com/2/tweets/search/recent?query=${encodeURIComponent(query)}&max_results=${clampedMaxResults}&tweet.fields=created_at,author_id,public_metrics`,
       { Authorization: `Bearer ${token}` },
     );
     if (!response.ok) {
@@ -500,6 +1331,13 @@ export class XAdapter {
         text: string;
         author_id: string;
         created_at: string;
+        public_metrics?: {
+          retweet_count?: number;
+          reply_count?: number;
+          like_count?: number;
+          quote_count?: number;
+          impression_count?: number;
+        };
       }>;
     };
     return (data.data ?? []).map((tweet) => ({
@@ -507,6 +1345,9 @@ export class XAdapter {
       text: tweet.text,
       authorId: tweet.author_id,
       createdAt: tweet.created_at,
+      likeCount: tweet.public_metrics?.like_count,
+      retweetCount: tweet.public_metrics?.retweet_count,
+      impressionCount: tweet.public_metrics?.impression_count,
     }));
   }
 

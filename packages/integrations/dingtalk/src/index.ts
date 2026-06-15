@@ -30,6 +30,39 @@ export type DingTalkCredentials = {
   clientSecret: string;
 };
 
+function httpStatusError(
+  message: string,
+  status: number,
+): Error & {
+  status: number;
+} {
+  return Object.assign(new Error(message), { status });
+}
+
+function isFailedBusinessCode(code: unknown): code is string | number {
+  if (typeof code === "number") return Number.isFinite(code) && code !== 0;
+  if (typeof code !== "string") return false;
+  const normalized = code.trim();
+  return normalized.length > 0 && normalized !== "0";
+}
+
+function businessCodeError(
+  message: string,
+  code?: string | number,
+): Error & { code?: string } {
+  const error = new Error(message) as Error & { code?: string };
+  if (code !== undefined) error.code = String(code);
+  return error;
+}
+
+type DingTalkRobotResponse = {
+  errcode?: number;
+  errmsg?: string;
+  code?: string | number;
+  message?: string;
+  success?: boolean;
+};
+
 function isPlainText(m: Message): m is string {
   return typeof m === "string";
 }
@@ -96,7 +129,7 @@ async function fetchRemoteBuffer(
 ): Promise<Buffer> {
   const resp = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
   if (!resp.ok) {
-    throw new Error(`HTTP ${resp.status}`);
+    throw httpStatusError(`HTTP ${resp.status}`, resp.status);
   }
   return Buffer.from(await resp.arrayBuffer());
 }
@@ -173,7 +206,10 @@ export class DingTalkAdapter extends MessagePlatformAdapter {
 
     if (!resp.ok || !json?.accessToken) {
       const msg = json?.message ?? json?.code ?? `HTTP ${resp.status}`;
-      throw new Error(`[DingTalkAdapter] Failed to get accessToken: ${msg}`);
+      throw httpStatusError(
+        `[DingTalkAdapter] Failed to get accessToken: ${msg}`,
+        resp.status,
+      );
     }
 
     const expireSec = typeof json.expireIn === "number" ? json.expireIn : 7200;
@@ -224,20 +260,34 @@ export class DingTalkAdapter extends MessagePlatformAdapter {
     console.log(
       `[DingTalkAdapter] postRobotMessage msgKey=${msgKey} target=${id} status=${resp.status}`,
     );
-    let parsed: { errcode?: number } = {};
+    let parsed: DingTalkRobotResponse | null = null;
     try {
-      parsed = JSON.parse(raw) as { errcode?: number };
+      parsed = JSON.parse(raw) as DingTalkRobotResponse;
     } catch {
       /* ignore */
     }
     if (!resp.ok) {
-      throw new Error(
+      throw httpStatusError(
         `[DingTalkAdapter] Send failed HTTP ${resp.status} ${raw.slice(0, 300)}`,
+        resp.status,
       );
     }
-    if (typeof parsed.errcode === "number" && parsed.errcode !== 0) {
-      throw new Error(
-        `[DingTalkAdapter] Send failed errcode=${parsed.errcode} ${raw.slice(0, 300)}`,
+    if (typeof parsed?.errcode === "number" && parsed.errcode !== 0) {
+      throw businessCodeError(
+        `[DingTalkAdapter] Send failed errcode=${parsed.errcode}: ${parsed.errmsg ?? raw.slice(0, 300)}`,
+        parsed.errcode,
+      );
+    }
+    if (parsed?.success === false) {
+      throw businessCodeError(
+        `[DingTalkAdapter] Send failed success=false: ${parsed.message ?? raw.slice(0, 300)}`,
+        parsed.code,
+      );
+    }
+    if (parsed?.success !== true && isFailedBusinessCode(parsed?.code)) {
+      throw businessCodeError(
+        `[DingTalkAdapter] Send failed code=${parsed.code}: ${parsed.message ?? raw.slice(0, 300)}`,
+        parsed.code,
       );
     }
   }
@@ -277,8 +327,9 @@ export class DingTalkAdapter extends MessagePlatformAdapter {
       /* ignore */
     }
     if (!resp.ok) {
-      throw new Error(
+      throw httpStatusError(
         `[DingTalkAdapter] Upload media failed HTTP ${resp.status} ${raw.slice(0, 300)}`,
+        resp.status,
       );
     }
     if (typeof parsed.errcode === "number" && parsed.errcode !== 0) {
@@ -306,171 +357,161 @@ export class DingTalkAdapter extends MessagePlatformAdapter {
     id: string,
     messages: Messages,
   ): Promise<void> {
-    const textParts: string[] = [];
-    const imageParts: Image[] = [];
-    const voiceParts: Voice[] = [];
-    const fileParts: FileMsg[] = [];
+    await this.runWithAdapterError("sendMessages", async () => {
+      const textParts: string[] = [];
+      const imageParts: Image[] = [];
+      const voiceParts: Voice[] = [];
+      const fileParts: FileMsg[] = [];
+      const unsupportedTypes = new Set<string>();
 
-    for (const m of messages) {
-      if (isPlainText(m)) {
-        if (m.trim()) textParts.push(m.trim());
-      } else if (isFileMessage(m)) {
-        // Check File before Image/Voice, because File has name which is the most precise distinction
-        fileParts.push(m);
-      } else if (isVoiceMessage(m)) {
-        voiceParts.push(m);
-      } else if (isImageMessage(m)) {
-        imageParts.push(m);
-      }
-    }
-
-    const text = textParts.join("\n").trim();
-    if (text) {
-      await this.postRobotMessage(id, "sampleMarkdown", {
-        text,
-        title: "openloomi",
-      });
-    }
-
-    const mediaErrors: string[] = [];
-
-    for (const image of imageParts) {
-      try {
-        if (/^https?:\/\//i.test(image.url)) {
-          // Prefer to try public URL; fallback to uploading media_id on failure
-          try {
-            await this.postRobotMessage(id, "sampleImageMsg", {
-              photoURL: image.url,
-            });
-            continue;
-          } catch (urlSendError) {
-            if (DEBUG) {
-              console.warn(
-                "[DingTalkAdapter] Direct image URL send failed, fallback to upload media_id",
-                urlSendError,
-              );
-            }
-          }
+      for (const m of messages) {
+        if (isPlainText(m)) {
+          if (m.trim()) textParts.push(m.trim());
+        } else if (isFileMessage(m)) {
+          // Check File before Image/Voice, because File has name which is the most precise distinction
+          fileParts.push(m);
+        } else if (isVoiceMessage(m)) {
+          voiceParts.push(m);
+        } else if (isImageMessage(m)) {
+          imageParts.push(m);
+        } else {
+          unsupportedTypes.add("content");
         }
-        // Local file / base64 → upload as image type, then send using media_id
-        const imageName =
-          image.id?.trim() ||
-          `image-${Date.now()}.${image.contentType?.split("/")[1] ?? "png"}`;
-        const imageBuffer = await mediaToBuffer({
-          url: image.url,
-          path: image.path,
-          base64: image.base64,
-        });
-        const mimeType = image.contentType || "image/png";
-        const mediaId = await this.uploadMedia(
-          "image",
-          imageName,
-          imageBuffer,
-          mimeType,
-        );
-        // photoURL field of sampleImageMsg can accept media_id (verified by nanobot in production)
-        try {
-          await this.postRobotMessage(id, "sampleImageMsg", {
-            photoURL: mediaId,
-          });
-        } catch {
-          // Fallback to file attachment
-          if (DEBUG)
-            console.log(
-              "[DingTalkAdapter] sampleImageMsg failed, degrade to sampleFile",
-            );
-          await this.postRobotMessage(id, "sampleFile", {
-            mediaId,
-            fileName: imageName,
-            fileType: imageName.split(".").pop() || "png",
-          });
-        }
-      } catch (error) {
-        console.error(
-          "[DingTalkAdapter] Image send failed, degrade to text hint",
-          error,
-        );
-        mediaErrors.push(
-          `Image(${image.id ?? image.url}) send failed: ${error instanceof Error ? error.message : String(error)}`,
+      }
+
+      if (unsupportedTypes.size > 0) {
+        throw this.createAdapterError(
+          "sendMessages",
+          "invalid_request_error",
+          `DingTalk send does not support message content: ${[...unsupportedTypes].join(", ")}`,
         );
       }
-    }
 
-    for (const voice of voiceParts) {
-      try {
-        const ext = voice.url.split(".").pop()?.toLowerCase() || "mp3";
-        const voiceName = voice.id?.trim() || `voice-${Date.now()}.${ext}`;
-        const voiceBuffer = await mediaToBuffer({
-          url: voice.url,
-          path: voice.path,
-          base64: voice.base64,
-        });
-        const mediaId = await this.uploadMedia(
-          "voice",
-          voiceName,
-          voiceBuffer,
-          "audio/amr",
-        );
-        // duration unit is seconds (integer)
-        const durationSec = voice.length
-          ? Math.max(1, Math.round(Number(voice.length)))
-          : 1;
-        await this.postRobotMessage(id, "sampleAudio", {
-          mediaId,
-          duration: durationSec,
-        });
-      } catch (error) {
-        console.error(
-          "[DingTalkAdapter] Voice send failed, degrade to text hint",
-          error,
-        );
-        mediaErrors.push(
-          `Voice(${voice.id ?? voice.url}) send failed: ${error instanceof Error ? error.message : String(error)}`,
-        );
-      }
-    }
-
-    for (const file of fileParts) {
-      try {
-        const fileName = file.name || `file-${Date.now()}.bin`;
-        const fileBuffer = await mediaToBuffer({ url: file.url });
-        const mediaId = await this.uploadMedia("file", fileName, fileBuffer);
-        await this.postRobotMessage(id, "sampleFile", {
-          mediaId,
-          fileName,
-          fileType: fileName.split(".").pop() || "bin",
-        });
-      } catch (error) {
-        console.error(
-          "[DingTalkAdapter] File send failed, degrade to text hint",
-          error,
-        );
-        mediaErrors.push(
-          `File(${file.name}) send failed: ${error instanceof Error ? error.message : String(error)}`,
-        );
-      }
-    }
-
-    if (
-      !text &&
-      imageParts.length === 0 &&
-      voiceParts.length === 0 &&
-      fileParts.length === 0
-    ) {
-      const fallback = messagesToMarkdown(messages);
-      if (fallback) {
+      const text = textParts.join("\n").trim();
+      if (text) {
         await this.postRobotMessage(id, "sampleMarkdown", {
-          text: fallback,
+          text,
           title: "openloomi",
         });
       }
-    }
-    if (mediaErrors.length > 0) {
-      throw new Error(
-        `[DingTalkAdapter] Media send failed: ${mediaErrors.join(" | ")}`,
-      );
-    }
-    if (DEBUG) console.log(`[DingTalkAdapter] Sent to chatId=${id}`);
+
+      const mediaErrors: string[] = [];
+
+      for (const image of imageParts) {
+        try {
+          if (/^https?:\/\//i.test(image.url)) {
+            // Prefer to try public URL; fallback to uploading media_id on failure
+            try {
+              await this.postRobotMessage(id, "sampleImageMsg", {
+                photoURL: image.url,
+              });
+              continue;
+            } catch (urlSendError) {
+              if (DEBUG) {
+                console.warn(
+                  "[DingTalkAdapter] Direct image URL send failed, fallback to upload media_id",
+                  urlSendError,
+                );
+              }
+            }
+          }
+          // Local file / base64 -> upload as image type, then send using media_id
+          const imageName =
+            image.id?.trim() ||
+            `image-${Date.now()}.${image.contentType?.split("/")[1] ?? "png"}`;
+          const imageBuffer = await mediaToBuffer({
+            url: image.url,
+            path: image.path,
+            base64: image.base64,
+          });
+          const mimeType = image.contentType || "image/png";
+          const mediaId = await this.uploadMedia(
+            "image",
+            imageName,
+            imageBuffer,
+            mimeType,
+          );
+          // photoURL field of sampleImageMsg can accept media_id (verified by nanobot in production)
+          try {
+            await this.postRobotMessage(id, "sampleImageMsg", {
+              photoURL: mediaId,
+            });
+          } catch {
+            // Fallback to file attachment
+            if (DEBUG)
+              console.log(
+                "[DingTalkAdapter] sampleImageMsg failed, degrade to sampleFile",
+              );
+            await this.postRobotMessage(id, "sampleFile", {
+              mediaId,
+              fileName: imageName,
+              fileType: imageName.split(".").pop() || "png",
+            });
+          }
+        } catch (error) {
+          console.error("[DingTalkAdapter] Image send failed", error);
+          mediaErrors.push(
+            `Image(${image.id ?? image.url}) send failed: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
+      }
+
+      for (const voice of voiceParts) {
+        try {
+          const ext = voice.url.split(".").pop()?.toLowerCase() || "mp3";
+          const voiceName = voice.id?.trim() || `voice-${Date.now()}.${ext}`;
+          const voiceBuffer = await mediaToBuffer({
+            url: voice.url,
+            path: voice.path,
+            base64: voice.base64,
+          });
+          const mediaId = await this.uploadMedia(
+            "voice",
+            voiceName,
+            voiceBuffer,
+            "audio/amr",
+          );
+          // duration unit is seconds (integer)
+          const durationSec = voice.length
+            ? Math.max(1, Math.round(Number(voice.length)))
+            : 1;
+          await this.postRobotMessage(id, "sampleAudio", {
+            mediaId,
+            duration: durationSec,
+          });
+        } catch (error) {
+          console.error("[DingTalkAdapter] Voice send failed", error);
+          mediaErrors.push(
+            `Voice(${voice.id ?? voice.url}) send failed: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
+      }
+
+      for (const file of fileParts) {
+        try {
+          const fileName = file.name || `file-${Date.now()}.bin`;
+          const fileBuffer = await mediaToBuffer({ url: file.url });
+          const mediaId = await this.uploadMedia("file", fileName, fileBuffer);
+          await this.postRobotMessage(id, "sampleFile", {
+            mediaId,
+            fileName,
+            fileType: fileName.split(".").pop() || "bin",
+          });
+        } catch (error) {
+          console.error("[DingTalkAdapter] File send failed", error);
+          mediaErrors.push(
+            `File(${file.name}) send failed: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
+      }
+
+      if (mediaErrors.length > 0) {
+        throw new Error(
+          `[DingTalkAdapter] Media send failed: ${mediaErrors.join(" | ")}`,
+        );
+      }
+      if (DEBUG) console.log(`[DingTalkAdapter] Sent to chatId=${id}`);
+    });
   }
 
   async replyMessages(
@@ -478,14 +519,16 @@ export class DingTalkAdapter extends MessagePlatformAdapter {
     messages: Messages,
     _quoteOrigin = false,
   ): Promise<void> {
-    if (event.targetType === "private") {
-      await this.sendMessages("private", String(event.sender.id), messages);
-      return;
-    }
-    const gm = event as GroupMessageEvent;
-    const gid = String(gm.sender.group.id);
-    const chatId = gid.startsWith("group:") ? gid : `group:${gid}`;
-    await this.sendMessages("group", chatId, messages);
+    await this.runWithAdapterError("replyMessages", async () => {
+      if (event.targetType === "private") {
+        await this.sendMessages("private", String(event.sender.id), messages);
+        return;
+      }
+      const gm = event as GroupMessageEvent;
+      const gid = String(gm.sender.group.id);
+      const chatId = gid.startsWith("group:") ? gid : `group:${gid}`;
+      await this.sendMessages("group", chatId, messages);
+    });
   }
 
   async getFriends(): Promise<Friend[]> {

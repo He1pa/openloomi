@@ -40,19 +40,40 @@ function isImageMessage(message: Message): message is Image {
   );
 }
 
-/** Convert openloomi Messages to plain text (first version only supports text, images as placeholders) */
 function messagesToQQText(messages: Messages): string {
-  const parts: string[] = [];
-  for (const m of messages) {
-    if (isPlainText(m)) {
-      parts.push(m);
-    } else if (isImageMessage(m)) {
-      parts.push("[Image]");
-    } else {
-      parts.push("[Content]");
-    }
+  return messages.filter(isPlainText).join("\n").trim();
+}
+
+function getUnsupportedMessageTypes(messages: Messages): string[] {
+  const unsupported = new Set<string>();
+  for (const message of messages) {
+    if (isPlainText(message)) continue;
+    unsupported.add(isImageMessage(message) ? "image" : "content");
   }
-  return parts.join("\n").trim() || "";
+  return [...unsupported];
+}
+
+function httpStatusError(
+  message: string,
+  status: number,
+): Error & {
+  status: number;
+} {
+  return Object.assign(new Error(message), { status });
+}
+
+function isFailedBusinessCode(code: unknown): code is string | number {
+  if (typeof code === "number") return Number.isFinite(code) && code !== 0;
+  if (typeof code !== "string") return false;
+  const normalized = code.trim();
+  return normalized.length > 0 && normalized !== "0";
+}
+
+function businessCodeError(
+  message: string,
+  code: string | number,
+): Error & { code: string } {
+  return Object.assign(new Error(message), { code: String(code) });
 }
 
 export class QQBotAdapter extends MessagePlatformAdapter {
@@ -97,7 +118,10 @@ export class QQBotAdapter extends MessagePlatformAdapter {
 
     if (!resp.ok || !json?.access_token) {
       const msg = json?.message ?? `HTTP ${resp.status}`;
-      throw new Error(`[QQBotAdapter] Failed to get access_token: ${msg}`);
+      throw httpStatusError(
+        `[QQBotAdapter] Failed to get access_token: ${msg}`,
+        resp.status,
+      );
     }
 
     const expireSec =
@@ -128,12 +152,22 @@ export class QQBotAdapter extends MessagePlatformAdapter {
     const resp = await fetch(url, options);
     const data = (await resp.json().catch(() => null)) as T & {
       message?: string;
-      code?: number;
+      code?: string | number;
     };
 
     if (!resp.ok) {
       const msg = data?.message ?? `HTTP ${resp.status}`;
-      throw new Error(`[QQBotAdapter] ${method} ${path} failed: ${msg}`);
+      throw httpStatusError(
+        `[QQBotAdapter] ${method} ${path} failed: ${msg}`,
+        resp.status,
+      );
+    }
+    if (isFailedBusinessCode(data?.code)) {
+      const msg = data?.message ?? `code=${data.code}`;
+      throw businessCodeError(
+        `[QQBotAdapter] ${method} ${path} failed code=${data.code}: ${msg}`,
+        data.code,
+      );
     }
     return data as T;
   }
@@ -148,26 +182,29 @@ export class QQBotAdapter extends MessagePlatformAdapter {
     id: string,
     messages: Messages,
   ): Promise<void> {
-    const text = messagesToQQText(messages);
-    if (!text) {
-      if (DEBUG) console.log("[QQBotAdapter] No text content, skipping send");
-      return;
-    }
+    await this.runWithAdapterError("sendMessages", async () => {
+      this.assertTextOnlyMessages("sendMessages", messages);
+      const text = messagesToQQText(messages);
+      if (!text) {
+        if (DEBUG) console.log("[QQBotAdapter] No text content, skipping send");
+        return;
+      }
 
-    if (target === "private") {
-      await this.qqApiRequest("POST", `/v2/users/${id}/messages`, {
-        content: text,
-        msg_type: 0,
-      });
-      if (DEBUG) console.log(`[QQBotAdapter] Sent private chat openid=${id}`);
-    } else {
-      await this.qqApiRequest("POST", `/v2/groups/${id}/messages`, {
-        content: text,
-        msg_type: 0,
-      });
-      if (DEBUG)
-        console.log(`[QQBotAdapter] Sent group chat group_openid=${id}`);
-    }
+      if (target === "private") {
+        await this.qqApiRequest("POST", `/v2/users/${id}/messages`, {
+          content: text,
+          msg_type: 0,
+        });
+        if (DEBUG) console.log(`[QQBotAdapter] Sent private chat openid=${id}`);
+      } else {
+        await this.qqApiRequest("POST", `/v2/groups/${id}/messages`, {
+          content: text,
+          msg_type: 0,
+        });
+        if (DEBUG)
+          console.log(`[QQBotAdapter] Sent group chat group_openid=${id}`);
+      }
+    });
   }
 
   async replyMessages(
@@ -175,37 +212,54 @@ export class QQBotAdapter extends MessagePlatformAdapter {
     messages: Messages,
     _quoteOrigin = false,
   ): Promise<void> {
-    const raw = event.sourcePlatformObject;
-    const targetId = (raw?.group_openid ??
-      raw?.openid ??
-      (event.sender as Friend)?.id) as string | undefined;
-    const messageId = raw?.id ?? raw?.message_id;
-    if (!targetId) {
-      await this.sendMessages(
-        event.targetType,
-        (event.sender as Friend).id as string,
-        messages,
-      );
-      return;
-    }
+    await this.runWithAdapterError("replyMessages", async () => {
+      this.assertTextOnlyMessages("replyMessages", messages);
+      const raw = event.sourcePlatformObject;
+      const targetId = (raw?.group_openid ??
+        raw?.openid ??
+        (event.sender as Friend)?.id) as string | undefined;
+      const messageId = raw?.id ?? raw?.message_id;
+      if (!targetId) {
+        await this.sendMessages(
+          event.targetType,
+          (event.sender as Friend).id as string,
+          messages,
+        );
+        return;
+      }
 
-    const text = messagesToQQText(messages);
-    if (!text) return;
+      const text = messagesToQQText(messages);
+      if (!text) return;
 
-    const target: MessageTarget = raw?.group_openid ? "group" : "private";
-    const body: Record<string, unknown> = {
-      content: text,
-      msg_type: 0,
-    };
-    if (messageId) body.msg_id = messageId;
+      const target: MessageTarget = raw?.group_openid ? "group" : "private";
+      const body: Record<string, unknown> = {
+        content: text,
+        msg_type: 0,
+      };
+      if (messageId) body.msg_id = messageId;
 
-    if (target === "private") {
-      await this.qqApiRequest("POST", `/v2/users/${targetId}/messages`, body);
-    } else {
-      await this.qqApiRequest("POST", `/v2/groups/${targetId}/messages`, body);
-    }
-    if (DEBUG)
-      console.log(`[QQBotAdapter] Replied target=${target} id=${targetId}`);
+      if (target === "private") {
+        await this.qqApiRequest("POST", `/v2/users/${targetId}/messages`, body);
+      } else {
+        await this.qqApiRequest(
+          "POST",
+          `/v2/groups/${targetId}/messages`,
+          body,
+        );
+      }
+      if (DEBUG)
+        console.log(`[QQBotAdapter] Replied target=${target} id=${targetId}`);
+    });
+  }
+
+  private assertTextOnlyMessages(operation: string, messages: Messages): void {
+    const unsupported = getUnsupportedMessageTypes(messages);
+    if (unsupported.length === 0) return;
+    throw this.createAdapterError(
+      operation,
+      "invalid_request_error",
+      `QQBot send currently supports text only; unsupported message content: ${unsupported.join(", ")}`,
+    );
   }
 
   async kill(): Promise<void> {
