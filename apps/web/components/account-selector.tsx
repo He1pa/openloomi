@@ -39,6 +39,7 @@ export function AccountSelector({
       twitter: t("platform.twitter", "X (Twitter)"),
       instagram: t("platform.instagram", "Instagram"),
       google_calendar: t("platform.googleCalendar", "Google Calendar"),
+      google_meet: t("platform.googleMeet", "Google Meet"),
       outlook_calendar: t("platform.outlookCalendar", "Outlook Calendar"),
       teams: t("platform.teams", "Microsoft Teams"),
       facebook_messenger: t("platform.facebookMessenger", "Facebook Messenger"),

@@ -1642,6 +1642,11 @@ export function getPlatformDisplayInfo(
       label: "Google Calendar",
       iconBackground: "bg-[#1A73E8]/10 text-[#1A73E8]",
     },
+    google_meet: {
+      icon: "video",
+      label: "Google Meet",
+      iconBackground: "bg-[#1A73E8]/10 text-[#1A73E8]",
+    },
     instagram: {
       icon: "instagram",
       label: "Instagram",
