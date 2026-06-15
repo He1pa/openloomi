@@ -14,8 +14,10 @@ import { Api } from "telegram";
 import bigInt from "big-integer";
 import {
   getIntegrationAccountsByUserId,
+  getUserInsightSettings,
   loadIntegrationCredentials,
 } from "@/lib/db/queries";
+import { resolveAgentLanguage } from "@/lib/insights/resolve-language";
 import type { IntegrationAccount } from "@/lib/db/schema";
 import { handleAgentRuntime } from "./handlers";
 import { TelegramConversationStore } from "@openloomi/integrations/telegram/conversation-store";
@@ -23,6 +25,13 @@ import { getAppMemoryDir } from "@/lib/utils/path";
 import { createTaskSession } from "@/lib/files/workspace/sessions";
 import { getReceivedAndExecutingMessage } from "./saved-messages-i18n";
 import { markdownToTelegramHtml } from "@openloomi/integrations/telegram/markdown";
+import {
+  calculateBackoffDelay,
+  isConnectionStale,
+  resolveConnectionState,
+  shouldProcessMessage,
+  pruneOwnSentIds,
+} from "@openloomi/integrations/telegram/state";
 import { DEFAULT_AI_MODEL, AI_PROXY_BASE_URL } from "@/lib/env/constants";
 
 // Singleton instance for Telegram conversation history
@@ -87,10 +96,7 @@ class TelegramUserListener {
   /** Add a sent message ID and evict oldest entries when the cap is exceeded. */
   private addOwnSentMessageId(id: number): void {
     this.ownSentMessageIds.add(id);
-    if (this.ownSentMessageIds.size > this.OWN_SENT_IDS_MAX) {
-      const oldest = this.ownSentMessageIds.values().next().value;
-      if (oldest !== undefined) this.ownSentMessageIds.delete(oldest);
-    }
+    pruneOwnSentIds(this.ownSentMessageIds, this.OWN_SENT_IDS_MAX);
   }
 
   /**
@@ -115,6 +121,10 @@ class TelegramUserListener {
       }
     }
     return undefined;
+  }
+
+  hasAuthToken(authToken?: string): boolean {
+    return (this.authToken ?? "") === (authToken ?? "");
   }
 
   /**
@@ -347,13 +357,7 @@ class TelegramUserListener {
           const prevState = this.connectionState.get(accountId);
 
           // Map numeric state to string for better logging
-          const stateMap: Record<number, string> = {
-            0: "connecting",
-            1: "connected",
-            2: "disconnected",
-            "-1": "connectionLost",
-          };
-          const stateStr = stateMap[state as number] || `unknown(${state})`;
+          const stateStr = resolveConnectionState(state);
 
           // Only log when state actually changes
           if (prevState !== stateStr) {
@@ -744,6 +748,13 @@ class TelegramUserListener {
                 account.id,
               );
 
+            // Prefer openloomi i18n preference over Telegram client's UI language
+            const insightSettings = await getUserInsightSettings(
+              this.userId,
+            ).catch(() => null);
+            const userLanguage =
+              resolveAgentLanguage(insightSettings) ?? me.langCode;
+
             // Call Agent Runtime with conversation history, images, fileAttachments, userId, and a callback to send the reply
             await handleAgentRuntime(
               messageText.length > 0
@@ -757,6 +768,7 @@ class TelegramUserListener {
                 userId: this.userId, // Pass userId for internal API (bypasses auth)
                 accountId: account.id, // Account ID for per-day file persistence
                 workDir, // Pass work directory to track generated files
+                language: userLanguage,
                 // Add modelConfig for API configuration (needed in Tauri mode)
                 ...(this.authToken && {
                   modelConfig: {
@@ -1001,14 +1013,17 @@ class TelegramUserListener {
         for (let i = messages.length - 1; i >= 0; i--) {
           const msg = messages[i];
           // Only process new messages
-          if (msg.id > lastProcessedId && msg instanceof Api.Message) {
-            // Skip messages we sent ourselves (notifications and AI replies)
-            if (this.ownSentMessageIds.has(msg.id)) {
-              this.lastProcessedMessageIds.set(accountId, msg.id);
+          if (msg instanceof Api.Message && msg.id > lastProcessedId) {
+            this.lastProcessedMessageIds.set(accountId, msg.id);
+            if (
+              !shouldProcessMessage(
+                msg.id,
+                lastProcessedId,
+                this.ownSentMessageIds,
+              )
+            ) {
               continue;
             }
-
-            this.lastProcessedMessageIds.set(accountId, msg.id);
 
             // Update lastEventTime for watchdog
             this.lastEventTime.set(accountId, Date.now());
@@ -1157,6 +1172,12 @@ class TelegramUserListener {
     const conversationHistory =
       telegramConversationStore.getConversationHistory(this.userId, account.id);
 
+    // Prefer openloomi i18n preference over Telegram client's UI language
+    const insightSettings = await getUserInsightSettings(this.userId).catch(
+      () => null,
+    );
+    const userLanguage = resolveAgentLanguage(insightSettings) ?? me.langCode;
+
     // Call Agent Runtime
     await handleAgentRuntime(
       messageText.length > 0
@@ -1170,6 +1191,7 @@ class TelegramUserListener {
         userId: this.userId,
         accountId: account.id, // Account ID for per-day file persistence
         workDir,
+        language: userLanguage,
         // Add modelConfig for API configuration (needed in Tauri mode)
         ...(this.authToken && {
           modelConfig: {
@@ -1301,11 +1323,15 @@ class TelegramUserListener {
 
     const timer = setInterval(async () => {
       const lastTime = this.lastEventTime.get(accountId) ?? 0;
-      const elapsed = Date.now() - lastTime;
+      const now = Date.now();
+      const elapsed = now - lastTime;
       const connState = this.connectionState.get(accountId);
 
       // Only trigger reconnection when connection state is "connected" and elapsed time exceeds threshold without receiving events
-      if (connState === "connected" && elapsed > this.STALE_THRESHOLD_MS) {
+      if (
+        connState === "connected" &&
+        isConnectionStale(lastTime, now, this.STALE_THRESHOLD_MS)
+      ) {
         if (DEBUG)
           console.warn(
             `[TelegramUserListener] [${accountId}] Watchdog: Connection stale ${Math.round(elapsed / 1000)}s no events received, forcing reconnection...`,
@@ -1430,17 +1456,19 @@ class TelegramUserListener {
     account: IntegrationAccount,
   ): Promise<void> {
     const attempts = this.reconnectAttempts.get(accountId) || 0;
+    const { delayMs: backoffDelay, shouldGiveUp } = calculateBackoffDelay(
+      attempts,
+      5000,
+      this.MAX_RECONNECT_ATTEMPTS,
+    );
 
-    if (attempts >= this.MAX_RECONNECT_ATTEMPTS) {
+    if (shouldGiveUp) {
       console.error(
         `[TelegramUserListener] Max reconnection attempts reached for account ${accountId}. Giving up.`,
       );
       this.reconnectAttempts.delete(accountId);
       return;
     }
-
-    // Calculate exponential backoff delay: 5s, 10s, 20s, 40s, 80s
-    const backoffDelay = 5000 * 2 ** attempts;
 
     if (DEBUG)
       console.log(
@@ -1547,6 +1575,13 @@ export async function stopTelegramUserListener(userId: string): Promise<void> {
  */
 export function isUserListenerRunning(userId: string): boolean {
   return userListeners.has(userId);
+}
+
+export function isUserListenerUsingAuthToken(
+  userId: string,
+  authToken?: string,
+): boolean {
+  return userListeners.get(userId)?.hasAuthToken(authToken) ?? false;
 }
 
 /**
