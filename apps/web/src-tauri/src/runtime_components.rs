@@ -8,6 +8,8 @@ use std::thread;
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 
+use crate::panic_guard::lock_recovered;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InstalledBinaryInfo {
     pub version: String,
@@ -82,13 +84,12 @@ impl ComponentState {
 }
 
 pub fn set_component_error(state: &ComponentState, message: Option<String>) {
-    if let Ok(mut guard) = state.error.lock() {
-        *guard = message;
-    }
+    let mut guard = lock_recovered(&state.error, "set runtime component error");
+    *guard = message;
 }
 
 pub fn get_component_error(state: &ComponentState) -> Option<String> {
-    state.error.lock().ok().and_then(|guard| guard.clone())
+    lock_recovered(&state.error, "get runtime component error").clone()
 }
 
 pub fn is_downloading_component(state: &ComponentState) -> bool {
@@ -139,7 +140,11 @@ pub fn get_home_dir() -> Option<PathBuf> {
 pub fn find_in_path(name: &str) -> Option<PathBuf> {
     // First check PATH
     let path_var = std::env::var("PATH").ok()?;
-    let splitter = if cfg!(target_os = "windows") { ";" } else { ":" };
+    let splitter = if cfg!(target_os = "windows") {
+        ";"
+    } else {
+        ":"
+    };
     if let Some(path) = path_var.split(splitter).find_map(|dir| {
         let candidate = PathBuf::from(dir).join(name);
         if candidate.exists() {
@@ -177,15 +182,19 @@ pub fn chrono_like_timestamp() -> String {
         .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_string())
 }
 
-pub fn write_installed_info(installed_json: &PathBuf, info: &InstalledBinaryInfo) -> Result<(), String> {
+pub fn write_installed_info(
+    installed_json: &PathBuf,
+    info: &InstalledBinaryInfo,
+) -> Result<(), String> {
     let parent = installed_json
         .parent()
         .ok_or("Runtime component parent directory missing")?;
-    std::fs::create_dir_all(parent).map_err(|e| format!("Failed to create component dir: {}", e))?;
+    std::fs::create_dir_all(parent)
+        .map_err(|e| format!("Failed to create component dir: {}", e))?;
 
     let tmp_path = installed_json.with_extension("json.tmp");
-    let content =
-        serde_json::to_string_pretty(info).map_err(|e| format!("Failed to serialize install info: {}", e))?;
+    let content = serde_json::to_string_pretty(info)
+        .map_err(|e| format!("Failed to serialize install info: {}", e))?;
     std::fs::write(&tmp_path, content)
         .map_err(|e| format!("Failed to write component metadata: {}", e))?;
     std::fs::rename(&tmp_path, installed_json)
@@ -291,10 +300,8 @@ pub fn extract_archive(
             }
         }
         ArchiveKind::Conda => {
-            let scratch_dir = std::env::temp_dir().join(format!(
-                "openloomi-pdftoppm-conda-{}",
-                std::process::id()
-            ));
+            let scratch_dir =
+                std::env::temp_dir().join(format!("openloomi-pdftoppm-conda-{}", std::process::id()));
             if scratch_dir.exists() {
                 let _ = std::fs::remove_dir_all(&scratch_dir);
             }
@@ -437,7 +444,7 @@ pub fn spawn_component_download(
     set_component_error(state, None);
     set_downloading_component(state, true);
     thread::spawn(move || {
-        let result = action();
+        let result = crate::panic_guard::catch_unwind_result("runtime component download", action);
         if let Err(error) = result {
             eprintln!("❌ Runtime component download failed: {}", error);
             set_component_error(state, Some(error));

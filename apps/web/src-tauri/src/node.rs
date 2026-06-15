@@ -7,11 +7,14 @@
 
 //! Node.js management module — handles discovery, download, and Next.js server lifecycle.
 
+use crate::panic_guard::{catch_unwind_str, lock_recovered};
 use sentry::{capture_message, Level};
 use std::path::PathBuf;
-use std::process::Command;
+use std::process::{Child, Command};
 use std::sync::atomic::{AtomicBool, Ordering};
 
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
 
@@ -21,6 +24,7 @@ use std::os::windows::process::CommandExt;
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 use std::sync::LazyLock;
 use std::sync::Mutex;
+use std::sync::TryLockError;
 use std::thread;
 use std::time::Duration;
 use tauri::Emitter;
@@ -66,8 +70,27 @@ pub static NODEJS_EXIT_CODE: Mutex<Option<i32>> = Mutex::new(None);
 /// Flag to prevent duplicate cleanup
 pub static IS_CLEANING: AtomicBool = AtomicBool::new(false);
 
-/// Saved Node.js PID for signal handling
-pub static NODEJS_PID: Mutex<Option<u32>> = Mutex::new(None);
+struct CleanupFlagGuard;
+
+impl CleanupFlagGuard {
+    fn try_enter(skip_message: &str) -> Option<Self> {
+        if IS_CLEANING
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::Relaxed)
+            .is_err()
+        {
+            println!("{}", skip_message);
+            return None;
+        }
+
+        Some(Self)
+    }
+}
+
+impl Drop for CleanupFlagGuard {
+    fn drop(&mut self) {
+        IS_CLEANING.store(false, Ordering::SeqCst);
+    }
+}
 
 /// Flag indicating whether Next.js server started successfully
 pub static NEXTJS_STARTED: AtomicBool = AtomicBool::new(false);
@@ -100,9 +123,9 @@ pub static DOWNLOADING_NODE: AtomicBool = AtomicBool::new(false);
 /// Set startup error message
 #[allow(dead_code)]
 pub fn set_startup_error(error: String) {
-    if let Ok(mut guard) = STARTUP_ERROR.lock() {
-        *guard = Some(error);
-    }
+    let mut guard = lock_recovered(&STARTUP_ERROR, "set startup error");
+    *guard = Some(error);
+    drop(guard);
     emit_server_status_event("error");
 }
 
@@ -124,34 +147,31 @@ pub fn is_downloading_node() -> bool {
 /// Get startup error message
 #[allow(dead_code)]
 pub fn get_startup_error() -> Option<String> {
-    STARTUP_ERROR.lock().ok().and_then(|guard| guard.clone())
+    lock_recovered(&STARTUP_ERROR, "get startup error").clone()
 }
 
 /// Emit server status event to the frontend via AppHandle
 fn emit_server_status_event(status: &str) {
     // Record status for polling fallback
-    if let Ok(mut guard) = LAST_SERVER_STATUS.lock() {
-        *guard = status.to_string();
-    }
+    let mut status_guard = lock_recovered(&LAST_SERVER_STATUS, "record server status");
+    *status_guard = status.to_string();
+    drop(status_guard);
 
     // First try to get from direct global
-    if let Ok(guard) = APP_HANDLE.lock() {
-        if let Some(ref app_handle) = *guard {
-            do_emit(app_handle, status);
-            return;
-        }
+    let app_handle = lock_recovered(&APP_HANDLE, "read app handle").clone();
+    if let Some(ref app_handle) = app_handle {
+        do_emit(app_handle, status);
+        return;
     }
 
     // Try to receive from the channel if available
-    if let Ok(rx_guard) = APP_HANDLE_RX.lock() {
-        if let Some(ref rx) = *rx_guard {
-            if let Ok(handle) = rx.recv_timeout(Duration::from_secs(1)) {
-                if let Ok(mut guard) = APP_HANDLE.lock() {
-                    *guard = Some(handle.clone());
-                }
-                do_emit(&handle, status);
-                return;
-            }
+    let rx_guard = lock_recovered(&APP_HANDLE_RX, "read app handle receiver");
+    if let Some(ref rx) = *rx_guard {
+        if let Ok(handle) = rx.recv_timeout(Duration::from_secs(1)) {
+            let mut app_guard = lock_recovered(&APP_HANDLE, "store app handle");
+            *app_guard = Some(handle.clone());
+            drop(app_guard);
+            do_emit(&handle, status);
         }
     }
 }
@@ -171,20 +191,14 @@ fn do_emit(app_handle: &tauri::AppHandle, status: &str) {
 /// Emit a crash event with a custom error message (used by watchdog and monitor thread)
 fn emit_crash_event(message: &str) {
     // Record crashed status for polling fallback
-    if let Ok(mut guard) = LAST_SERVER_STATUS.lock() {
-        *guard = "crashed".to_string();
-    }
+    let mut status_guard = lock_recovered(&LAST_SERVER_STATUS, "record crash status");
+    *status_guard = "crashed".to_string();
+    drop(status_guard);
 
     // Capture crash to Sentry
     capture_message(&format!("Node.js Process Crash: {}", message), Level::Error);
 
-    let app_handle_opt = {
-        if let Ok(guard) = APP_HANDLE.lock() {
-            guard.clone()
-        } else {
-            return;
-        }
-    };
+    let app_handle_opt = lock_recovered(&APP_HANDLE, "read app handle for crash event").clone();
 
     if let Some(ref app_handle) = app_handle_opt {
         let payload = ServerStatus {
@@ -205,46 +219,57 @@ fn spawn_watchdog_thread() {
     let watchdog_node_process = NODEJS_PROCESS.clone();
 
     thread::spawn(move || {
-        loop {
-            thread::sleep(Duration::from_secs(30));
+        if let Err(error) = catch_unwind_str("node watchdog thread", || {
+            loop {
+                thread::sleep(Duration::from_secs(30));
 
-            // Try to check if the child process is still alive
-            let is_alive = {
-                if let Ok(mut guard) = watchdog_node_process.lock() {
+                // Try to check if the child process is still alive
+                let is_alive = {
+                    let mut guard = lock_recovered(
+                        watchdog_node_process.as_ref(),
+                        "watchdog node process handle",
+                    );
                     if let Some(ref mut child) = *guard {
-                        child.try_wait().ok().flatten().is_none()
+                        match child.try_wait() {
+                            Ok(Some(_)) => false,
+                            Ok(None) => true,
+                            Err(error) => {
+                                eprintln!("⚠️  Watchdog failed to poll Node.js: {}", error);
+                                false
+                            }
+                        }
                     } else {
                         break; // No child process, exit watchdog
                     }
-                } else {
+                };
+
+                if !is_alive {
+                    eprintln!("⚠️  Watchdog detected Node.js process is dead");
+
+                    // Clear running state
+                    NEXTJS_STARTED.store(false, Ordering::SeqCst);
+
+                    // Notify frontend of crash
+                    emit_crash_event("Server process died unexpectedly. Restarting...");
+
+                    // Wait before restarting to let frontend show the crash state
+                    eprintln!("🔄 Auto-restarting in 5 seconds...");
+                    thread::sleep(Duration::from_secs(5));
+
+                    // Clean up and restart
+                    cleanup_nodejs_process();
+
+                    // Reset startup in-progress flag so restart can proceed
+                    let _ = STARTUP_IN_PROGRESS.swap(false, Ordering::SeqCst);
+
+                    start_nextjs_server();
+
+                    // Exit this watchdog loop — new start_nextjs_server will spawn a fresh one
                     break;
                 }
-            };
-
-            if !is_alive {
-                eprintln!("⚠️  Watchdog detected Node.js process is dead");
-
-                // Clear running state
-                NEXTJS_STARTED.store(false, Ordering::SeqCst);
-
-                // Notify frontend of crash
-                emit_crash_event("Server process died unexpectedly. Restarting...");
-
-                // Wait before restarting to let frontend show the crash state
-                eprintln!("🔄 Auto-restarting in 5 seconds...");
-                thread::sleep(Duration::from_secs(5));
-
-                // Clean up and restart
-                cleanup_nodejs_process();
-
-                // Reset startup in-progress flag so restart can proceed
-                let _ = STARTUP_IN_PROGRESS.swap(false, Ordering::SeqCst);
-
-                start_nextjs_server();
-
-                // Exit this watchdog loop — new start_nextjs_server will spawn a fresh one
-                break;
             }
+        }) {
+            eprintln!("⚠️  Node.js watchdog stopped unexpectedly: {}", error);
         }
     });
 }
@@ -895,7 +920,10 @@ fn get_packaged_render_engine_paths(
 
     let platform_dir = crate::runtime_components::get_platform_dir();
     let engine_dir = [
-        resource_dir.join("resources").join("render-engine").join(&platform_dir),
+        resource_dir
+            .join("resources")
+            .join("render-engine")
+            .join(&platform_dir),
         resource_dir.join("render-engine").join(&platform_dir),
     ]
     .into_iter()
@@ -1075,6 +1103,7 @@ pub fn try_start_nextjs(
         .env("LLM_EMBEDDING_MODEL", "qwen/qwen3-embedding-4b")
         .env("LLM_EMBEDDING_BASE_URL", "https://openrouter.ai/api/v1")
         .env("TELEGRAM_MODE", "pooling")
+        .env("ANTHROPIC_BASE_URL", "http://localhost:3414/api/ai")
         .env("API_TIMEOUT_MS", "3000000")
         .env("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1")
         .env("CLAUDE_CODE_TMPDIR", code_tmpdir)
@@ -1096,6 +1125,8 @@ pub fn try_start_nextjs(
     } else {
         cmd
     };
+    #[cfg(unix)]
+    cmd.process_group(0);
 
     // Capture stderr to a temp file so we can read error output on failure
     let stderr_path = std::env::temp_dir().join("openloomi_node_stderr.log");
@@ -1109,22 +1140,23 @@ pub fn try_start_nextjs(
 
     match cmd.stderr(Stdio::from(stderr_file)).spawn() {
         Ok(mut child) => {
+            let node_pid = child.id();
+
             // Write secrets to stdin
-            if let Some(ref mut stdin) = child.stdin {
+            if let Some(mut stdin) = child.stdin.take() {
                 if let Err(e) = stdin.write_all(secrets_json.as_bytes()) {
                     eprintln!("❌ Failed to write secrets to stdin: {}", e);
                     let _ = child.kill();
                     let _ = child.wait();
                     return Err(format!("Failed to write stdin: {}", e));
                 }
-                // Close stdin so the child can read EOF
-                let _ = stdin;
+                // Dropping stdin sends EOF so boot-with-secrets.js can start server.js.
             }
 
             // Store child globally so we can clean it up later
-            if let Ok(mut guard) = NODEJS_PROCESS.lock() {
-                *guard = Some(child);
-            }
+            let mut guard = lock_recovered(NODEJS_PROCESS.as_ref(), "store node process handle");
+            *guard = Some(child);
+            drop(guard);
 
             println!("✅ Node.js process spawned with secrets via stdin");
             println!("📄 Capturing stderr to: {:?}", stderr_path);
@@ -1133,76 +1165,93 @@ pub fn try_start_nextjs(
             let stderr_path_clone = stderr_path.clone();
             let node_process = NODEJS_PROCESS.clone();
             thread::spawn(move || {
-                // Take ownership of child from the global Arc so we can wait on it
-                let child = {
-                    let mut guard = match node_process.lock() {
-                        Ok(g) => g,
-                        Err(_) => return,
-                    };
-                    guard.take() // Take the child out — this consumes it
-                };
+                if let Err(error) = catch_unwind_str("node process monitor thread", || {
+                    let status = loop {
+                        thread::sleep(Duration::from_secs(1));
 
-                // Wait for the child process to exit
-                let Some(mut child) = child else {
-                    return;
-                };
-                match child.wait() {
-                    Ok(status) => {
-                        let exit_code: Option<i32> = status.code();
-                        println!("⚠️  Node.js process exited with status: {:?}", exit_code);
-
-                        // If the server was running (NEXTJS_STARTED was true), emit crash event
-                        if NEXTJS_STARTED.load(Ordering::SeqCst) {
-                            NEXTJS_STARTED.store(false, Ordering::SeqCst);
-                            let msg = if let Some(code) = exit_code {
-                                format!("Server crashed with exit code: {}", code)
-                            } else {
-                                "Server process exited unexpectedly".to_string()
+                        let poll_result = {
+                            let mut guard = lock_recovered(
+                                node_process.as_ref(),
+                                "monitor node process handle",
+                            );
+                            let Some(child) = guard.as_mut() else {
+                                let _ = fs::remove_file(&stderr_path_clone);
+                                return;
                             };
-                            emit_crash_event(&msg);
-                        }
-
-                        // Read captured stderr
-                        let stderr_content =
-                            if let Ok(content) = fs::read_to_string(&stderr_path_clone) {
-                                content.trim().to_string()
-                            } else {
-                                String::new()
+                            if child.id() != node_pid {
+                                let _ = fs::remove_file(&stderr_path_clone);
+                                return;
                             };
+                            child.try_wait()
+                        };
 
-                        // Store for later retrieval
-                        if let Ok(mut guard) = NODEJS_EXIT_CODE.lock() {
-                            *guard = exit_code;
-                        }
-                        let stderr_is_empty = stderr_content.is_empty();
-                        // Log the exit details (must happen before moving stderr_content)
-                        if !stderr_is_empty {
-                            eprintln!("═══ Node.js stderr ═══");
-                            for line in stderr_content.lines().take(20) {
-                                eprintln!("  {}", line);
+                        match poll_result {
+                            Ok(Some(status)) => break status,
+                            Ok(None) => continue,
+                            Err(e) => {
+                                eprintln!("⚠️  Failed to poll Node.js process: {}", e);
+                                let _ = fs::remove_file(&stderr_path_clone);
+                                return;
                             }
-                            eprintln!("═════════════════════");
                         }
+                    };
 
-                        // Store for later retrieval
-                        if let Ok(mut guard) = NODEJS_STDERR.lock() {
-                            *guard = if stderr_is_empty {
-                                None
-                            } else {
-                                Some(stderr_content)
-                            };
-                        }
-                        if let Some(code) = exit_code {
-                            eprintln!("Exit code: {}", code);
-                        }
+                    let exit_code: Option<i32> = status.code();
+                    println!("⚠️  Node.js process exited with status: {:?}", exit_code);
+
+                    // If the server was running (NEXTJS_STARTED was true), emit crash event
+                    if NEXTJS_STARTED.load(Ordering::SeqCst) {
+                        NEXTJS_STARTED.store(false, Ordering::SeqCst);
+                        let msg = if let Some(code) = exit_code {
+                            format!("Server crashed with exit code: {}", code)
+                        } else {
+                            "Server process exited unexpectedly".to_string()
+                        };
+                        emit_crash_event(&msg);
                     }
-                    Err(e) => {
-                        eprintln!("⚠️  Failed to wait on Node.js process: {}", e);
+
+                    // Read captured stderr
+                    let stderr_content = if let Ok(content) = fs::read_to_string(&stderr_path_clone)
+                    {
+                        content.trim().to_string()
+                    } else {
+                        String::new()
+                    };
+
+                    // Store for later retrieval
+                    let mut exit_guard = lock_recovered(&NODEJS_EXIT_CODE, "store node exit code");
+                    *exit_guard = exit_code;
+                    drop(exit_guard);
+                    let stderr_is_empty = stderr_content.is_empty();
+                    // Log the exit details (must happen before moving stderr_content)
+                    if !stderr_is_empty {
+                        eprintln!("═══ Node.js stderr ═══");
+                        for line in stderr_content.lines().take(20) {
+                            eprintln!("  {}", line);
+                        }
+                        eprintln!("═════════════════════");
                     }
+
+                    // Store for later retrieval
+                    let mut stderr_guard = lock_recovered(&NODEJS_STDERR, "store node stderr");
+                    *stderr_guard = if stderr_is_empty {
+                        None
+                    } else {
+                        Some(stderr_content)
+                    };
+                    drop(stderr_guard);
+                    if let Some(code) = exit_code {
+                        eprintln!("Exit code: {}", code);
+                    }
+
+                    // Clean up stderr temp file
+                    let _ = fs::remove_file(&stderr_path_clone);
+                }) {
+                    eprintln!(
+                        "⚠️  Node.js process monitor stopped unexpectedly: {}",
+                        error
+                    );
                 }
-
-                // Clean up stderr temp file
-                let _ = fs::remove_file(&stderr_path_clone);
             });
 
             Ok(())
@@ -1259,6 +1308,7 @@ pub fn start_nextjs_server() {
         eprintln!("❌ {}", msg);
         set_startup_error(msg);
         NEXTJS_STARTED.store(false, Ordering::SeqCst);
+        STARTUP_IN_PROGRESS.store(false, Ordering::SeqCst);
         return;
     }
 
@@ -1369,182 +1419,196 @@ pub fn start_nextjs_server() {
     println!("📍 Environment variables being passed to Node.js:");
 
     thread::spawn(move || {
-        println!("⏳ Spawning Node.js process...");
+        if let Err(error) = catch_unwind_str("start_nextjs_server thread", || {
+            println!("⏳ Spawning Node.js process...");
 
-        let mut node_candidates: Vec<(&str, String)> = Vec::new();
+            let mut node_candidates: Vec<(&str, String)> = Vec::new();
 
-        println!("🔍 Searching for system Node.js...");
-        #[cfg(all(not(debug_assertions), unix))]
-        if let Some(system_node) = find_system_node(&env_home) {
-            println!("✅ Found system Node.js at: {}", system_node);
-            node_candidates.push(("system", system_node));
-        } else {
-            println!("⚠️  No system Node.js found in PATH, will try downloaded...");
-        }
-        #[cfg(all(not(debug_assertions), windows))]
-        if let Some(system_node) = find_system_node(&env_home) {
-            println!("✅ Found system Node.js at: {}", system_node);
-            node_candidates.push(("system", system_node));
-        } else {
-            println!("⚠️  No system Node.js found in PATH, will try downloaded...");
-        }
+            println!("🔍 Searching for system Node.js...");
+            #[cfg(all(not(debug_assertions), unix))]
+            if let Some(system_node) = find_system_node(&env_home) {
+                println!("✅ Found system Node.js at: {}", system_node);
+                node_candidates.push(("system", system_node));
+            } else {
+                println!("⚠️  No system Node.js found in PATH, will try downloaded...");
+            }
+            #[cfg(all(not(debug_assertions), windows))]
+            if let Some(system_node) = find_system_node(&env_home) {
+                println!("✅ Found system Node.js at: {}", system_node);
+                node_candidates.push(("system", system_node));
+            } else {
+                println!("⚠️  No system Node.js found in PATH, will try downloaded...");
+            }
 
-        // Always attempt downloaded Node.js as fallback — even if a system node was found,
-        // it may be broken (shell wrapper, broken symlink). The loop over node_candidates
-        // will try system first, then downloaded.
-        #[cfg(all(
-            not(debug_assertions),
-            any(target_os = "macos", target_os = "linux", target_os = "windows")
-        ))]
-        if let Some(downloaded) = download_and_install_node(&env_home) {
-            println!("📦 Downloaded Node.js at: {}", downloaded);
-            node_candidates.push(("downloaded", downloaded));
-        }
+            // Always attempt downloaded Node.js as fallback — even if a system node was found,
+            // it may be broken (shell wrapper, broken symlink). The loop over node_candidates
+            // will try system first, then downloaded.
+            #[cfg(all(
+                not(debug_assertions),
+                any(target_os = "macos", target_os = "linux", target_os = "windows")
+            ))]
+            if let Some(downloaded) = download_and_install_node(&env_home) {
+                println!("📦 Downloaded Node.js at: {}", downloaded);
+                node_candidates.push(("downloaded", downloaded));
+            }
 
-        if node_candidates.is_empty() {
-            eprintln!("❌ No Node.js available!");
-            set_startup_error(
-                "No Node.js available. Please install Node.js v22.17.0 or higher. Download: https://nodejs.org".to_string()
-            );
-            NEXTJS_STARTED.store(false, Ordering::SeqCst);
-            return;
-        }
+            if node_candidates.is_empty() {
+                eprintln!("❌ No Node.js available!");
+                set_startup_error(
+                    "No Node.js available. Please install Node.js v22.17.0 or higher. Download: https://nodejs.org".to_string(),
+                );
+                NEXTJS_STARTED.store(false, Ordering::SeqCst);
+                STARTUP_IN_PROGRESS.store(false, Ordering::SeqCst);
+                return;
+            }
 
-        let mut last_error = String::new();
-        let mut success = false;
+            let mut last_error = String::new();
+            let mut success = false;
 
-        for (node_type, node_path) in &node_candidates {
-            println!("🔄 Trying {} Node.js at: {}", node_type, node_path);
+            for (node_type, node_path) in &node_candidates {
+                println!("🔄 Trying {} Node.js at: {}", node_type, node_path);
 
-            cleanup_port(3414);
+                cleanup_port(3414);
 
-            match try_start_nextjs(
-                node_path,
-                &server_script,
-                &work_dir,
-                &db_path_str,
-                &env_home,
-                &env_path,
-                &env_user,
-                &env_shell,
-                &code_tmpdir_str,
-                soffice_path.as_deref(),
-                pdftoppm_path.as_deref(),
-            ) {
-                Ok(_) => {
-                    println!("⏳ Waiting for server to be ready...");
-                    let mut server_ready = false;
-                    let mut crashed = false;
-                    let mut crash_stderr = String::new();
-                    let mut crash_exit_code: Option<i32> = None;
+                match try_start_nextjs(
+                    node_path,
+                    &server_script,
+                    &work_dir,
+                    &db_path_str,
+                    &env_home,
+                    &env_path,
+                    &env_user,
+                    &env_shell,
+                    &code_tmpdir_str,
+                    soffice_path.as_deref(),
+                    pdftoppm_path.as_deref(),
+                ) {
+                    Ok(_) => {
+                        println!("⏳ Waiting for server to be ready...");
+                        let mut server_ready = false;
+                        let mut crashed = false;
+                        let mut crash_stderr = String::new();
+                        let mut crash_exit_code: Option<i32> = None;
 
-                    for i in 0..5 {
-                        thread::sleep(Duration::from_secs(2));
+                        for i in 0..5 {
+                            thread::sleep(Duration::from_secs(2));
 
-                        // Check if the child process is still running
-                        let child_died = if let Ok(mut guard) = NODEJS_PROCESS.lock() {
-                            if let Some(ref mut child) = *guard {
-                                child.try_wait().ok().flatten().is_some()
-                            } else {
-                                false
+                            // Check if the child process is still running
+                            let child_died = {
+                                let mut guard =
+                                    lock_recovered(NODEJS_PROCESS.as_ref(), "check node process");
+                                if let Some(ref mut child) = *guard {
+                                    match child.try_wait() {
+                                        Ok(Some(_)) => true,
+                                        Ok(None) => false,
+                                        Err(error) => {
+                                            eprintln!(
+                                                "⚠️  Failed to poll Node.js during startup: {}",
+                                                error
+                                            );
+                                            false
+                                        }
+                                    }
+                                } else {
+                                    false
+                                }
+                            };
+
+                            if child_died {
+                                println!("⚠️  Node.js process crashed during startup!");
+                                crashed = true;
+                                // Read captured stderr and exit code
+                                crash_stderr =
+                                    lock_recovered(&NODEJS_STDERR, "read startup node stderr")
+                                        .clone()
+                                        .unwrap_or_default();
+                                crash_exit_code = *lock_recovered(
+                                    &NODEJS_EXIT_CODE,
+                                    "read startup node exit code",
+                                );
+                                break;
                             }
-                        } else {
-                            false
-                        };
 
-                        if child_died {
-                            println!("⚠️  Node.js process crashed during startup!");
-                            crashed = true;
-                            // Read captured stderr and exit code
-                            if let Ok(guard) = NODEJS_STDERR.lock() {
-                                crash_stderr = guard.clone().unwrap_or_default();
+                            use std::net::TcpStream;
+                            if TcpStream::connect("127.0.0.1:3414").is_ok() {
+                                println!("✅ Server is ready on port 3414!");
+                                server_ready = true;
+                                break;
                             }
-                            if let Ok(guard) = NODEJS_EXIT_CODE.lock() {
-                                crash_exit_code = *guard;
-                            }
-                            break;
+                            println!("⏳ Waiting for server... ({}s)", (i + 1) * 2);
                         }
 
-                        use std::net::TcpStream;
-                        if TcpStream::connect("127.0.0.1:3414").is_ok() {
-                            println!("✅ Server is ready on port 3414!");
-                            server_ready = true;
+                        if server_ready {
+                            println!("✅ Server started successfully with {} Node.js!", node_type);
+                            success = true;
                             break;
-                        }
-                        println!("⏳ Waiting for server... ({}s)", (i + 1) * 2);
-                    }
-
-                    if server_ready {
-                        println!("✅ Server started successfully with {} Node.js!", node_type);
-                        success = true;
-                        break;
-                    } else if crashed {
-                        // Node.js crashed — surface the detailed error
-                        let stderr_snippet = if crash_stderr.is_empty() {
-                            String::new()
-                        } else {
-                            let lines: Vec<&str> = crash_stderr.lines().take(10).collect();
-                            let snippet = lines.join("; ");
-                            format!(" stderr: {}", snippet)
-                        };
-                        let exit_info = crash_exit_code
-                            .map(|c| format!(" (exit code: {})", c))
-                            .unwrap_or_default();
-                        last_error = format!(
-                            "{} Node.js crashed during startup{}: {}{}",
-                            node_type,
-                            exit_info,
-                            crash_stderr
-                                .lines()
-                                .next()
-                                .unwrap_or("unknown error")
-                                .trim(),
-                            if crash_stderr.lines().count() > 1 {
-                                " [see logs]"
+                        } else if crashed {
+                            // Node.js crashed — surface the detailed error
+                            let stderr_snippet = if crash_stderr.is_empty() {
+                                String::new()
                             } else {
-                                ""
-                            }
-                        );
-                        eprintln!("⚠️  {}", last_error);
-                        cleanup_port(3414);
-                        continue;
-                    } else {
-                        last_error =
-                            format!("{} Node.js started but server not listening", node_type);
-                        eprintln!("⚠️  Server not responding on port 3414");
+                                let lines: Vec<&str> = crash_stderr.lines().take(10).collect();
+                                let snippet = lines.join("; ");
+                                format!(" stderr: {}", snippet)
+                            };
+                            let exit_info = crash_exit_code
+                                .map(|c| format!(" (exit code: {})", c))
+                                .unwrap_or_default();
+                            last_error = format!(
+                                "{} Node.js crashed during startup{}: {}{}",
+                                node_type,
+                                exit_info,
+                                crash_stderr
+                                    .lines()
+                                    .next()
+                                    .unwrap_or("unknown error")
+                                    .trim(),
+                                if crash_stderr.lines().count() > 1 {
+                                    " [see logs]"
+                                } else {
+                                    ""
+                                }
+                            );
+                            eprintln!("⚠️  {}", last_error);
+                            cleanup_port(3414);
+                            continue;
+                        } else {
+                            last_error =
+                                format!("{} Node.js started but server not listening", node_type);
+                            eprintln!("⚠️  Server not responding on port 3414");
+                            cleanup_port(3414);
+                            continue;
+                        }
+                    }
+                    Err(e) => {
+                        last_error = format!("{} Node.js failed: {}", node_type, e);
+                        eprintln!("⚠️  {} Node.js failed to start: {}", node_type, e);
                         cleanup_port(3414);
                         continue;
                     }
-                }
-                Err(e) => {
-                    last_error = format!("{} Node.js failed: {}", node_type, e);
-                    eprintln!("⚠️  {} Node.js failed to start: {}", node_type, e);
-                    cleanup_port(3414);
-                    continue;
                 }
             }
-        }
 
-        if success {
-            NEXTJS_STARTED.store(true, Ordering::SeqCst);
-            STARTUP_IN_PROGRESS.store(false, Ordering::SeqCst);
-            emit_server_status_event("running");
+            if success {
+                NEXTJS_STARTED.store(true, Ordering::SeqCst);
+                STARTUP_IN_PROGRESS.store(false, Ordering::SeqCst);
+                emit_server_status_event("running");
 
-            // Spawn watchdog thread to monitor process health
-            spawn_watchdog_thread();
-        } else {
-            NEXTJS_STARTED.store(false, Ordering::SeqCst);
-            STARTUP_IN_PROGRESS.store(false, Ordering::SeqCst);
-            eprintln!(
-                "❌ All Node.js candidates failed. Last error: {}",
-                last_error
-            );
-            // Build a detailed error message for the frontend
-            let mut frontend_error = last_error.clone();
+                // Spawn watchdog thread to monitor process health
+                spawn_watchdog_thread();
+            } else {
+                NEXTJS_STARTED.store(false, Ordering::SeqCst);
+                STARTUP_IN_PROGRESS.store(false, Ordering::SeqCst);
+                eprintln!(
+                    "❌ All Node.js candidates failed. Last error: {}",
+                    last_error
+                );
+                // Build a detailed error message for the frontend
+                let mut frontend_error = last_error.clone();
 
-            // Append captured stderr if available
-            if let Ok(guard) = NODEJS_STDERR.lock() {
-                if let Some(ref stderr) = *guard {
+                // Append captured stderr if available
+                let stderr_guard = lock_recovered(&NODEJS_STDERR, "read final startup node stderr");
+                if let Some(ref stderr) = *stderr_guard {
                     if !stderr.is_empty() {
                         let lines: Vec<&str> = stderr.lines().take(5).collect();
                         let snippet = lines.join(" | ");
@@ -1555,19 +1619,26 @@ pub fn start_nextjs_server() {
                         );
                     }
                 }
-            }
+                drop(stderr_guard);
 
-            // Append exit code if available
-            if let Ok(guard) = NODEJS_EXIT_CODE.lock() {
-                if let Some(code) = *guard {
+                // Append exit code if available
+                let exit_code =
+                    *lock_recovered(&NODEJS_EXIT_CODE, "read final startup node exit code");
+                if let Some(code) = exit_code {
                     frontend_error = format!("{} (exit code: {})", frontend_error, code);
                 }
-            }
 
-            set_startup_error(format!(
-                "{} | Download Node.js: https://nodejs.org",
-                frontend_error
-            ));
+                set_startup_error(format!(
+                    "{} | Download Node.js: https://nodejs.org",
+                    frontend_error
+                ));
+            }
+        }) {
+            eprintln!("❌ Node.js startup stopped unexpectedly: {}", error);
+            NEXTJS_STARTED.store(false, Ordering::SeqCst);
+            STARTUP_IN_PROGRESS.store(false, Ordering::SeqCst);
+            cleanup_nodejs_process();
+            set_startup_error(error);
         }
     });
 }
@@ -1637,53 +1708,164 @@ pub fn cleanup_port(port: u16) {
 
 /// Clean up the Node.js child process
 pub fn cleanup_nodejs_process() {
-    if IS_CLEANING
-        .compare_exchange(false, true, Ordering::SeqCst, Ordering::Relaxed)
-        .is_err()
-    {
-        println!("🧹 Cleanup already in progress, skipping...");
+    let Some(_cleanup_guard) =
+        CleanupFlagGuard::try_enter("🧹 Cleanup already in progress, skipping...")
+    else {
         return;
-    }
+    };
 
     println!("🧹 Cleaning up Node.js process...");
 
-    if let Ok(mut guard) = NODEJS_PROCESS.lock() {
-        if let Some(mut child) = guard.take() {
-            let pid = child.id();
-            println!(
-                "🔨 Terminating Node.js process via handle (PID: {:?})...",
-                pid
-            );
-            #[cfg(unix)]
-            {
-                let _ = Command::new("kill")
-                    .args(["-15", &format!("-{}", pid)])
-                    .status();
-                thread::sleep(Duration::from_millis(500));
-                let _ = Command::new("kill")
-                    .args(["-9", &format!("-{}", pid)])
-                    .status();
-            }
-            #[cfg(target_os = "windows")]
-            {
-                let _ = Command::new("taskkill")
-                    .args(["/F", "/T", "/PID", &format!("{}", pid)])
-                    .creation_flags(CREATE_NO_WINDOW)
-                    .status();
-            }
-            let _ = child.kill();
-            let _ = child.wait();
-        }
+    let child = {
+        let mut guard = lock_recovered(NODEJS_PROCESS.as_ref(), "cleanup node process handle");
+        guard.take()
+    };
+
+    if let Some(mut child) = child {
+        terminate_node_child(&mut child);
     }
 
     cleanup_port(3414);
 
-    if let Ok(mut pid_guard) = NODEJS_PID.lock() {
-        *pid_guard = None;
+    println!("✅ Cleanup completed");
+}
+
+fn terminate_node_pid(pid: u32) {
+    println!("🔨 Terminating Node.js process via PID ({:?})...", pid);
+    #[cfg(unix)]
+    {
+        let _ = Command::new("kill")
+            .args(["-15", &format!("-{}", pid)])
+            .status();
+        let _ = Command::new("kill")
+            .args(["-15", &pid.to_string()])
+            .status();
+        thread::sleep(Duration::from_millis(500));
+        let _ = Command::new("kill")
+            .args(["-9", &format!("-{}", pid)])
+            .status();
+        let _ = Command::new("kill").args(["-9", &pid.to_string()]).status();
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let _ = Command::new("taskkill")
+            .args(["/F", "/T", "/PID", &format!("{}", pid)])
+            .creation_flags(CREATE_NO_WINDOW)
+            .status();
+    }
+}
+
+fn terminate_node_child(child: &mut Child) {
+    let pid = child.id();
+    println!(
+        "🔨 Terminating Node.js process via handle (PID: {:?})...",
+        pid
+    );
+    match child.try_wait() {
+        Ok(Some(_)) => return,
+        Ok(None) => {}
+        Err(error) => {
+            eprintln!("⚠️  Skipping Node.js PID termination after wait check failed: {error}");
+            return;
+        }
+    }
+    // Only signal a PID while it is still backed by this Child handle.
+    terminate_node_pid(pid);
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+fn terminate_node_pid_from_panic_hook(pid: u32) {
+    #[cfg(unix)]
+    {
+        let pid = pid as libc::pid_t;
+        unsafe {
+            // SAFETY: kill only reads the pid/signal values. Errors are ignored
+            // because this panic-hook path is best-effort and must not block.
+            let _ = libc::kill(-pid, libc::SIGKILL);
+            let _ = libc::kill(pid, libc::SIGKILL);
+        }
     }
 
-    IS_CLEANING.store(false, Ordering::SeqCst);
-    println!("✅ Cleanup completed");
+    #[cfg(target_os = "windows")]
+    {
+        let _ = Command::new("taskkill")
+            .args(["/F", "/T", "/PID", &format!("{}", pid)])
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn();
+    }
+
+    #[cfg(not(any(unix, target_os = "windows")))]
+    {
+        let _ = pid;
+    }
+}
+
+fn terminate_node_child_from_panic_hook(child: &mut Child) {
+    let pid = child.id();
+    println!(
+        "🔨 Terminating Node.js process from panic hook (PID: {:?})...",
+        pid
+    );
+    match child.try_wait() {
+        Ok(Some(_)) => return,
+        Ok(None) => {}
+        Err(error) => {
+            eprintln!(
+                "⚠️  Skipping panic-hook Node.js PID termination after wait check failed: {error}"
+            );
+            return;
+        }
+    }
+    // Avoid a global PID fallback here; a reaped PID can be reused.
+    terminate_node_pid_from_panic_hook(pid);
+    let _ = child.kill();
+}
+
+fn take_node_child_from_panic_hook() -> Option<Child> {
+    const MAX_ATTEMPTS: usize = 50;
+
+    for attempt in 0..MAX_ATTEMPTS {
+        match NODEJS_PROCESS.as_ref().try_lock() {
+            Ok(mut guard) => return guard.take(),
+            Err(TryLockError::Poisoned(poisoned)) => {
+                let mut guard = poisoned.into_inner();
+                return guard.take();
+            }
+            Err(TryLockError::WouldBlock) => {
+                if attempt + 1 == MAX_ATTEMPTS {
+                    eprintln!(
+                        "⚠️  Skipping Node.js handle cleanup during panic; handle lock stayed busy"
+                    );
+                    return None;
+                }
+                thread::sleep(Duration::from_millis(1));
+            }
+        }
+    }
+
+    None
+}
+
+/// Best-effort cleanup from the panic hook.
+///
+/// The panic hook can run while the panicking thread still holds
+/// `NODEJS_PROCESS`, so only wait briefly for transient monitor contention and
+/// avoid unbounded mutex waits, child waits, or port scans.
+pub fn cleanup_nodejs_process_from_panic_hook() {
+    let Some(_cleanup_guard) = CleanupFlagGuard::try_enter(
+        "🧹 Cleanup already in progress, skipping panic-hook cleanup...",
+    ) else {
+        return;
+    };
+
+    println!("🧹 Cleaning up Node.js process from panic hook...");
+
+    if let Some(mut child) = take_node_child_from_panic_hook() {
+        terminate_node_child_from_panic_hook(&mut child);
+    }
+
+    println!("✅ Panic-hook cleanup completed");
 }
 
 /// Clean up any residual processes before starting
@@ -1704,73 +1886,80 @@ pub struct ServerStatus {
 /// Get current server status
 #[tauri::command]
 pub fn get_server_status() -> ServerStatus {
-    #[cfg(not(debug_assertions))]
-    {
-        let running = NEXTJS_STARTED.load(Ordering::SeqCst);
-        let error_message = get_startup_error();
-        let downloading = is_downloading_node();
+    catch_unwind_str("get_server_status", || {
+        #[cfg(not(debug_assertions))]
+        {
+            let running = NEXTJS_STARTED.load(Ordering::SeqCst);
+            let error_message = get_startup_error();
+            let downloading = is_downloading_node();
 
-        let status = if running {
-            "running".to_string()
-        } else if downloading {
-            "downloading".to_string()
-        } else if error_message.is_some() {
-            "error".to_string()
-        } else {
-            // Use last recorded status (may be "crashed" or "starting")
-            LAST_SERVER_STATUS
-                .lock()
-                .map(|g| g.clone())
-                .unwrap_or_else(|_| "starting".to_string())
-        };
+            let status = if running {
+                "running".to_string()
+            } else if downloading {
+                "downloading".to_string()
+            } else if error_message.is_some() {
+                "error".to_string()
+            } else {
+                // Use last recorded status (may be "crashed" or "starting")
+                lock_recovered(&LAST_SERVER_STATUS, "read last server status").clone()
+            };
 
-        ServerStatus {
-            running,
-            status,
-            error_message,
-            node_version: get_node_version(),
+            ServerStatus {
+                running,
+                status,
+                error_message,
+                node_version: get_node_version(),
+            }
         }
-    }
 
-    #[cfg(debug_assertions)]
-    {
-        ServerStatus {
-            running: true,
-            status: "running".to_string(),
-            error_message: None,
-            node_version: None,
+        #[cfg(debug_assertions)]
+        {
+            ServerStatus {
+                running: true,
+                status: "running".to_string(),
+                error_message: None,
+                node_version: None,
+            }
         }
-    }
+    })
+    .unwrap_or_else(|error| ServerStatus {
+        running: false,
+        status: "error".to_string(),
+        error_message: Some(error),
+        node_version: None,
+    })
 }
 
 /// Restart the Next.js server
 #[tauri::command]
 #[cfg(not(debug_assertions))]
 pub fn restart_server() -> Result<(), String> {
-    println!("🔄 Restarting Next.js server...");
+    crate::panic_guard::catch_unwind_result("restart_server", || {
+        println!("🔄 Restarting Next.js server...");
 
-    // Reset error state
-    if let Ok(mut guard) = STARTUP_ERROR.lock() {
+        // Reset error state
+        let mut guard = lock_recovered(&STARTUP_ERROR, "clear startup error");
         *guard = None;
-    }
+        drop(guard);
 
-    // Reset the started flag
-    NEXTJS_STARTED.store(false, Ordering::SeqCst);
+        // Reset the started flag
+        NEXTJS_STARTED.store(false, Ordering::SeqCst);
 
-    // Emit starting status
-    emit_server_status_event("starting");
+        // Emit starting status
+        emit_server_status_event("starting");
 
-    // Clean up existing process
-    cleanup_nodejs_process();
+        // Clean up existing process
+        cleanup_nodejs_process();
 
-    // Restart the server (start_nextjs_server has its own STARTUP_IN_PROGRESS guard)
-    start_nextjs_server();
+        // Restart the server (start_nextjs_server has its own STARTUP_IN_PROGRESS guard)
+        start_nextjs_server();
 
-    Ok(())
+        Ok(())
+    })
 }
 
 #[cfg(debug_assertions)]
 #[tauri::command]
 pub fn restart_server() -> Result<(), String> {
-    Ok(())
+    crate::panic_guard::catch_unwind_result("restart_server", || Ok(()))
 }

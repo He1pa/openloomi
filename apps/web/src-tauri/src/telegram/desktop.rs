@@ -65,11 +65,13 @@ pub fn get_telegram_data_dir() -> Option<PathBuf> {
 /// Detect if Telegram Desktop is installed and has a session
 #[tauri::command]
 pub fn detect_telegram_desktop() -> Result<TelegramDesktopInfo, String> {
+    crate::panic_guard::catch_unwind_result("detect_telegram_desktop", detect_telegram_desktop_impl)
+}
+
+fn detect_telegram_desktop_impl() -> Result<TelegramDesktopInfo, String> {
     println!("🔍 Detecting Telegram Desktop...");
 
-    let data_dir = get_telegram_data_dir();
-
-    if data_dir.is_none() {
+    let Some(data_dir) = get_telegram_data_dir() else {
         println!("❌ Telegram Desktop data directory not found");
         return Ok(TelegramDesktopInfo {
             installed: false,
@@ -78,9 +80,8 @@ pub fn detect_telegram_desktop() -> Result<TelegramDesktopInfo, String> {
             data_path: None,
             is_app_store_version: None,
         });
-    }
+    };
 
-    let data_dir = data_dir.unwrap();
     println!("✅ Found Telegram at: {:?}", data_dir);
 
     // Check if it's macOS native version (does not support quick login)
@@ -125,6 +126,12 @@ pub fn detect_telegram_desktop() -> Result<TelegramDesktopInfo, String> {
 /// Detect Telegram Desktop at specified path
 #[tauri::command]
 pub fn check_custom_telegram_path(path: String) -> Result<TelegramDesktopInfo, String> {
+    crate::panic_guard::catch_unwind_result("check_custom_telegram_path", || {
+        check_custom_telegram_path_impl(path)
+    })
+}
+
+fn check_custom_telegram_path_impl(path: String) -> Result<TelegramDesktopInfo, String> {
     println!("🔍 Checking custom Telegram Desktop path: {}", path);
 
     // Expand tilde ~ to actual home directory

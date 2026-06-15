@@ -6,21 +6,23 @@ pub fn send_notification(
     title: String,
     body: String,
 ) -> Result<(), String> {
-    let notification = app_handle.notification();
+    crate::panic_guard::catch_unwind_result("send_notification", || {
+        let notification = app_handle.notification();
 
-    // Check and request permission if needed
-    let permission_state = notification.permission_state().map_err(|e| e.to_string())?;
+        // Check and request permission if needed
+        let permission_state = notification.permission_state().map_err(|e| e.to_string())?;
 
-    if permission_state != tauri_plugin_notification::PermissionState::Granted {
+        if permission_state != tauri_plugin_notification::PermissionState::Granted {
+            notification
+                .request_permission()
+                .map_err(|e| e.to_string())?;
+        }
+
         notification
-            .request_permission()
-            .map_err(|e| e.to_string())?;
-    }
-
-    notification
-        .builder()
-        .title(&title)
-        .body(&body)
-        .show()
-        .map_err(|e| e.to_string())
+            .builder()
+            .title(&title)
+            .body(&body)
+            .show()
+            .map_err(|e| e.to_string())
+    })
 }

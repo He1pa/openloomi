@@ -9,6 +9,8 @@ use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use crate::panic_guard::lock_recovered;
+
 // ============ Types ============
 
 /// Update check result returned to the frontend
@@ -280,10 +282,10 @@ fn get_app_relaunch_path() -> Option<String> {
 
 // ============ Tauri Commands ============
 
-/// Tauri command: check GitHub releases for a newer version
+/// Tauri command: check for a newer version via R2
 #[tauri::command]
 pub async fn check_for_update() -> Result<UpdateCheckResult, String> {
-    do_check_for_update().await
+    crate::panic_guard::catch_unwind_future_result("check_for_update", do_check_for_update()).await
 }
 
 /// Internal: performs the actual update check (can be called directly from Rust).
@@ -295,8 +297,89 @@ pub async fn do_check_for_update() -> Result<UpdateCheckResult, String> {
         .build()
         .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
 
+    // Try R2 first, then fallback to GitHub
+    let latest_version = match fetch_version_from_r2(&client).await {
+        Ok(v) => {
+            println!("📦 Got version from R2: {}", v);
+            v
+        }
+        Err(e) => {
+            println!("⚠️  R2 failed ({}), trying GitHub...", e);
+            fetch_version_from_github(&client).await?
+        }
+    };
+
+    let latest_tag = format!("v{}", latest_version);
+    let download_filename = get_platform_download_filename(&latest_tag).unwrap_or_default();
+
+    let has_update =
+        is_newer_version(&latest_version, current_version) && !download_filename.is_empty();
+
+    // Try R2 first for download, then fallback to GitHub
+    let download_url = if !download_filename.is_empty() {
+        let github_url = format!(
+            "https://github.com/melandlabs/release/releases/download/{}/{}",
+            latest_tag, download_filename
+        );
+        let r2_url = format!(
+            "https://pub-7f8ad94cb1444cbebae6bfd55ec52f5d.r2.dev/{}",
+            download_filename
+        );
+
+        // Try R2 first
+        match client.head(&r2_url).send().await {
+            Ok(resp) if resp.status().is_success() => {
+                println!("📦 R2 has file, using: {}", r2_url);
+                r2_url
+            }
+            _ => {
+                println!("📦 R2 not available, using GitHub: {}", github_url);
+                github_url
+            }
+        }
+    } else {
+        String::new()
+    };
+
+    Ok(UpdateCheckResult {
+        has_update,
+        latest_version,
+        current_version: current_version.to_string(),
+        download_url,
+        release_url: format!(
+            "https://github.com/melandlabs/release/releases/tag/{}",
+            latest_tag
+        ),
+        file_size: 0,
+    })
+}
+
+async fn fetch_version_from_r2(client: &reqwest::Client) -> Result<String, String> {
+    let r2_url = "https://pub-7f8ad94cb1444cbebae6bfd55ec52f5d.r2.dev/latest.json";
+    let response = client
+        .get(r2_url)
+        .send()
+        .await
+        .map_err(|e| format!("R2 request failed: {}", e))?;
+
+    if !response.status().is_success() {
+        return Err(format!("HTTP {}", response.status()));
+    }
+
+    let json: serde_json::Value = response
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse latest.json: {}", e))?;
+
+    json["version"]
+        .as_str()
+        .ok_or("Invalid latest.json: missing 'version' field".to_string())
+        .map(|s| s.to_string())
+}
+
+async fn fetch_version_from_github(client: &reqwest::Client) -> Result<String, String> {
     let mut req = client
-        .get("https://api.github.com/repos/melandlabs/openloomi/tags")
+        .get("https://api.github.com/repos/melandlabs/release/tags")
         .header("Accept", "application/vnd.github+json");
     if let Ok(token) = std::env::var("GITHUB_TOKEN") {
         if !token.is_empty() {
@@ -307,14 +390,13 @@ pub async fn do_check_for_update() -> Result<UpdateCheckResult, String> {
     let response = req
         .send()
         .await
-        .map_err(|e| format!("Failed to fetch tags: {}", e))?;
+        .map_err(|e| format!("GitHub API request failed: {}", e))?;
 
-    if !response.status().is_success() {
-        // GitHub may return rate limit (403) or other errors as plain text/HTML
-        let status = response.status();
+    let status = response.status();
+    if !status.is_success() {
         let body = response.text().await.unwrap_or_default();
         return Err(format!(
-            "GitHub API returned error {}: {}",
+            "GitHub API error {}: {}",
             status,
             if body.len() > 200 {
                 &body[..200]
@@ -327,7 +409,7 @@ pub async fn do_check_for_update() -> Result<UpdateCheckResult, String> {
     let tags: Vec<serde_json::Value> = response
         .json()
         .await
-        .map_err(|e| format!("Failed to parse tags: {}", e))?;
+        .map_err(|e| format!("Failed to parse GitHub response: {}", e))?;
 
     let latest_tag = tags
         .first()
@@ -335,83 +417,27 @@ pub async fn do_check_for_update() -> Result<UpdateCheckResult, String> {
         .ok_or("No tags found")?
         .to_string();
 
-    // Check if a release exists for this tag before showing update
-    let release_url = format!(
-        "https://api.github.com/repos/melandlabs/openloomi/releases/tags/{}",
-        latest_tag
-    );
-    let mut release_req = client
-        .get(&release_url)
-        .header("Accept", "application/vnd.github+json");
-    if let Ok(token) = std::env::var("GITHUB_TOKEN") {
-        if !token.is_empty() {
-            release_req = release_req.header("Authorization", format!("Bearer {}", token));
-        }
-    }
-    let release_resp = release_req
-        .send()
-        .await
-        .map_err(|e| format!("Failed to fetch release: {}", e))?;
-    if !release_resp.status().is_success() {
-        return Err(format!("No release found for tag {}", latest_tag));
-    }
-
-    let release_json: serde_json::Value = release_resp
-        .json()
-        .await
-        .map_err(|e| format!("Failed to parse release JSON: {}", e))?;
-
-    let latest_version = latest_tag
+    Ok(latest_tag
         .strip_prefix('v')
         .unwrap_or(&latest_tag)
-        .to_string();
-    let download_filename = get_platform_download_filename(&latest_tag).unwrap_or_default();
-
-    // Extract file size from the matching asset in the release JSON.
-    // This is the authoritative size from GitHub — the CDN redirect response
-    // may not include Content-Length, so we use this as a fallback.
-    let file_size: u64 = release_json["assets"]
-        .as_array()
-        .and_then(|assets| {
-            assets
-                .iter()
-                .find(|a| a["name"].as_str() == Some(&download_filename))
-        })
-        .and_then(|asset| asset["size"].as_u64())
-        .unwrap_or(0);
-
-    let has_update =
-        is_newer_version(&latest_tag, current_version) && !download_filename.is_empty();
-
-    let download_url = if !download_filename.is_empty() {
-        format!(
-            "https://github.com/melandlabs/openloomi/releases/download/{}/{}",
-            latest_tag, download_filename
-        )
-    } else {
-        String::new()
-    };
-
-    Ok(UpdateCheckResult {
-        has_update,
-        latest_version,
-        current_version: current_version.to_string(),
-        download_url,
-        release_url: format!(
-            "https://github.com/melandlabs/openloomi/releases/tag/{}",
-            latest_tag
-        ),
-        file_size,
-    })
+        .to_string())
 }
 
-/// Tauri command: start downloading update (non-blocking, returns immediately)
+/// Tauri command: start downloading update (non-blocking, returns immediately).
 #[tauri::command]
 pub async fn start_update_download(download_url: String, file_size: u64) -> Result<(), String> {
+    crate::panic_guard::catch_unwind_future_result(
+        "start_update_download",
+        start_update_download_impl(download_url, file_size),
+    )
+    .await
+}
+
+async fn start_update_download_impl(download_url: String, file_size: u64) -> Result<(), String> {
     // Reset global progress state
     let state = get_progress_state();
     {
-        let mut s = state.lock().unwrap();
+        let mut s = lock_recovered(&state, "update download progress");
         *s = DownloadProgressState::default();
     }
 
@@ -421,38 +447,19 @@ pub async fn start_update_download(download_url: String, file_size: u64) -> Resu
         .ok_or("Invalid download URL")?
         .to_string();
 
-    let temp_dir = std::env::temp_dir();
-    let download_path = temp_dir.join(&filename);
-
-    println!(
-        "📥 Starting update download: {} -> {:?}",
-        download_url, download_path
-    );
-
-    let client = reqwest::Client::builder()
-        .user_agent("openloomi-App")
-        .timeout(Duration::from_secs(120))
-        .build()
-        .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
-
-    // Build request with optional GitHub token to avoid rate limits
-    let mut req = client
-        .get(&download_url)
-        .header("Accept", "application/octet-stream");
-    if let Ok(token) = std::env::var("GITHUB_TOKEN") {
-        if !token.is_empty() {
-            req = req.header("Authorization", format!("Bearer {}", token));
-        }
-    }
-
     // Spawn the download task in background
     let state_clone = state.clone();
+    let url_clone = download_url.clone();
     let filename_clone = filename.clone();
 
     tokio::spawn(async move {
-        let result = download_file(&state_clone, req, file_size, &filename_clone).await;
+        let result =
+            crate::panic_guard::catch_unwind_future_result("update download task", async {
+                download_file(&state_clone, &url_clone, file_size, &filename_clone).await
+            })
+            .await;
         if let Err(e) = result {
-            let mut s = state_clone.lock().unwrap();
+            let mut s = lock_recovered(&state_clone, "update download progress");
             s.error = Some(e);
             s.done = true;
         }
@@ -464,12 +471,18 @@ pub async fn start_update_download(download_url: String, file_size: u64) -> Resu
 /// Internal: performs the actual file download with progress tracking
 async fn download_file(
     state: &Arc<Mutex<DownloadProgressState>>,
-    req: reqwest::RequestBuilder,
+    url: &str,
     file_size: u64,
     filename: &str,
 ) -> Result<(), String> {
     let temp_dir = std::env::temp_dir();
     let download_path = temp_dir.join(filename);
+
+    let client = reqwest::Client::builder()
+        .user_agent("openloomi-app")
+        .timeout(Duration::from_secs(120))
+        .build()
+        .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
 
     // Retry with exponential backoff for transient network errors.
     let mut last_err = String::new();
@@ -483,7 +496,17 @@ async fn download_file(
         // Delete any partial file from a previous attempt
         let _ = tokio::fs::remove_file(&download_path).await;
 
-        let mut response = match req.try_clone().expect("request cloneable").send().await {
+        // Build request - GitHub URL may need token to avoid rate limits
+        let mut req = client.get(url).header("Accept", "application/octet-stream");
+        if url.contains("github.com") {
+            if let Ok(token) = std::env::var("GITHUB_TOKEN") {
+                if !token.is_empty() {
+                    req = req.header("Authorization", format!("Bearer {}", token));
+                }
+            }
+        }
+
+        let mut response = match req.send().await {
             Ok(r) => r,
             Err(e) => {
                 last_err = format_err(&e);
@@ -493,8 +516,18 @@ async fn download_file(
         };
 
         if !response.status().is_success() {
-            last_err = format!("HTTP {}, redirect path", response.status());
-            eprintln!("⚠️  Download attempt {} failed: {}", attempt + 1, last_err);
+            let status = response.status();
+            let err_msg = if status.as_u16() == 404 {
+                format!("HTTP 404 Not Found - {}", url)
+            } else {
+                format!("HTTP {} - {}", status, url)
+            };
+            last_err = err_msg.clone();
+            eprintln!("⚠️  Download attempt {} failed: {}", attempt + 1, err_msg);
+            // Don't retry on 404 - the file doesn't exist on this source
+            if status.as_u16() == 404 {
+                return Err(format!("HTTP 404 Not Found: {}", url));
+            }
             break;
         }
 
@@ -506,7 +539,7 @@ async fn download_file(
 
         // Update total in progress state
         {
-            let mut s = state.lock().unwrap();
+            let mut s = lock_recovered(&state, "update download progress");
             s.total = total_size;
         }
 
@@ -525,7 +558,7 @@ async fn download_file(
         loop {
             // Check if already done (aborted by frontend) - must drop guard before await
             let should_abort = {
-                let s = state.lock().unwrap();
+                let s = lock_recovered(&state, "update download progress");
                 s.done
             };
 
@@ -574,7 +607,7 @@ async fn download_file(
 
             // Update progress
             let (new_downloaded, new_total, percent) = {
-                let mut s = state.lock().unwrap();
+                let mut s = lock_recovered(&state, "update download progress");
                 s.downloaded += downloaded;
                 let total = s.total;
                 let downloaded = s.downloaded;
@@ -617,7 +650,7 @@ async fn download_file(
 
         // Mark done and store download path
         {
-            let mut s = state.lock().unwrap();
+            let mut s = lock_recovered(&state, "update download progress");
             s.downloaded = downloaded_size;
             s.total = downloaded_size;
             s.percent = 100;
@@ -643,23 +676,40 @@ pub struct PollProgressResult {
 
 #[tauri::command]
 pub fn poll_update_download_progress() -> PollProgressResult {
-    let state = get_progress_state();
-    let s = state.lock().unwrap();
-    PollProgressResult {
-        downloaded: s.downloaded,
-        total: s.total,
-        percent: s.percent,
-        done: s.done,
-        error: s.error.clone(),
-    }
+    crate::panic_guard::catch_unwind_str("poll_update_download_progress", || {
+        let state = get_progress_state();
+        let s = lock_recovered(&state, "update download progress");
+        PollProgressResult {
+            downloaded: s.downloaded,
+            total: s.total,
+            percent: s.percent,
+            done: s.done,
+            error: s.error.clone(),
+        }
+    })
+    .unwrap_or_else(|error| PollProgressResult {
+        downloaded: 0,
+        total: 0,
+        percent: 0,
+        done: true,
+        error: Some(error),
+    })
 }
 
 /// Tauri command: finish update (install the downloaded file, called after poll shows done)
 #[tauri::command]
 pub async fn finish_update_download() -> Result<UpdateInstallResult, String> {
+    crate::panic_guard::catch_unwind_future_result(
+        "finish_update_download",
+        finish_update_download_impl(),
+    )
+    .await
+}
+
+async fn finish_update_download_impl() -> Result<UpdateInstallResult, String> {
     let state = get_progress_state();
     let (download_path, _error_msg) = {
-        let s = state.lock().unwrap();
+        let s = lock_recovered(&state, "update download progress");
         (s.download_path.clone(), s.error.clone())
     };
 
@@ -690,208 +740,6 @@ pub async fn finish_update_download() -> Result<UpdateInstallResult, String> {
         }
     }
 }
-
-/// Tauri command: download update and auto-install (legacy, kept for compatibility)
-#[tauri::command]
-pub async fn download_and_install_update(
-    download_url: String,
-    file_size: u64,
-) -> Result<UpdateInstallResult, String> {
-    // Reset global progress state
-    let state = get_progress_state();
-    {
-        let mut s = state.lock().unwrap();
-        *s = DownloadProgressState::default();
-    }
-
-    let filename = download_url
-        .split('/')
-        .last()
-        .ok_or("Invalid download URL")?;
-
-    let temp_dir = std::env::temp_dir();
-    let download_path = temp_dir.join(filename);
-
-    println!(
-        "📥 Downloading update: {} -> {:?}",
-        download_url, download_path
-    );
-
-    let client = reqwest::Client::builder()
-        .user_agent("openloomi-App")
-        .timeout(Duration::from_secs(120))
-        .build()
-        .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
-
-    // Build request with optional GitHub token to avoid rate limits
-    let mut req = client
-        .get(&download_url)
-        .header("Accept", "application/octet-stream");
-    if let Ok(token) = std::env::var("GITHUB_TOKEN") {
-        if !token.is_empty() {
-            req = req.header("Authorization", format!("Bearer {}", token));
-        }
-    }
-
-    // Retry with exponential backoff for transient network errors.
-    // Stream directly to disk (no memory buffering) to handle large files.
-    // GitHub CDN may not include Content-Length in the redirect response, so use
-    // the pre-known file_size from the GitHub API release as a fallback.
-    let mut last_err = String::new();
-    for attempt in 0..3 {
-        if attempt > 0 {
-            let delay = Duration::from_secs(1 << attempt); // 2s, 4s
-            println!("⏳ Retry {} after {:?}...", attempt, delay);
-            tokio::time::sleep(delay).await;
-        }
-
-        // Delete any partial file from a previous attempt
-        let _ = tokio::fs::remove_file(&download_path).await;
-
-        let mut response = match req.try_clone().expect("request cloneable").send().await {
-            Ok(r) => r,
-            Err(e) => {
-                last_err = format_err(&e);
-                eprintln!("⚠️  Download attempt {} failed: {}", attempt + 1, last_err);
-                continue;
-            }
-        };
-
-        if !response.status().is_success() {
-            last_err = format!(
-                "HTTP {}, redirect path: {}",
-                response.status(),
-                download_url
-            );
-            eprintln!("⚠️  Download attempt {} failed: {}", attempt + 1, last_err);
-            // Don't retry HTTP errors — the URL is wrong or file missing
-            break;
-        }
-
-        // Use content_length if available, otherwise fall back to known file_size
-        let total_size = response
-            .content_length()
-            .unwrap_or(file_size)
-            .max(file_size);
-        let mut file = match tokio::fs::File::create(&download_path).await {
-            Ok(f) => f,
-            Err(e) => {
-                last_err = format!("Failed to create file: {}", e);
-                eprintln!("⚠️  {}", last_err);
-                break;
-            }
-        };
-        let mut downloaded: u64 = 0;
-        let mut last_emitted_percent: u8 = 0;
-
-        use tokio::io::AsyncWriteExt;
-        let mut stream_error = false;
-
-        // Read chunk with timeout to detect connection issues
-        loop {
-            let chunk_result =
-                tokio::time::timeout(Duration::from_secs(30), response.chunk()).await;
-
-            let chunk = match chunk_result {
-                Ok(Ok(Some(c))) => c,
-                Ok(Ok(None)) => break, // Stream finished normally
-                Ok(Err(e)) => {
-                    last_err = if e.is_decode() {
-                        "Network error: connection interrupted (check your internet)".to_string()
-                    } else {
-                        format!("Failed to read chunk: {}", e)
-                    };
-                    eprintln!("⚠️  Stream error: {}", last_err);
-                    stream_error = true;
-                    break;
-                }
-                Err(_) => {
-                    last_err = "Download timeout: connection stalled (check internet)".to_string();
-                    eprintln!("⚠️  Chunk read timeout");
-                    stream_error = true;
-                    break;
-                }
-            };
-
-            let chunk = chunk;
-            downloaded += chunk.len() as u64;
-            if let Err(e) = file.write_all(&chunk).await {
-                last_err = format!("Failed to write chunk: {}", e);
-                eprintln!("⚠️  {}", last_err);
-                stream_error = true;
-                break;
-            }
-
-            let percent = if total_size > 0 {
-                ((downloaded as f64 / total_size as f64) * 100.0).min(100.0) as u8
-            } else {
-                0
-            };
-
-            if percent != last_emitted_percent {
-                last_emitted_percent = percent;
-                // Update global progress state for polling
-                {
-                    let mut s = state.lock().unwrap();
-                    s.downloaded = downloaded;
-                    s.total = total_size;
-                    s.percent = percent;
-                }
-            }
-        }
-
-        if stream_error {
-            continue;
-        }
-
-        if file.shutdown().await.is_err() {
-            last_err = "Failed to flush file".to_string();
-            continue;
-        }
-
-        // Download completed successfully
-        let _ = {
-            let mut s = state.lock().unwrap();
-            s.downloaded = downloaded;
-            s.total = if total_size == 0 {
-                downloaded
-            } else {
-                total_size
-            };
-            s.percent = 100;
-        };
-
-        let downloaded_size = std::fs::metadata(&download_path)
-            .map(|m| m.len())
-            .unwrap_or(0);
-        println!(
-            "✅ Download complete: {:?} ({}MB)",
-            download_path,
-            downloaded_size / 1024 / 1024
-        );
-
-        return match auto_install_platform(&download_path) {
-            Ok(()) => Ok(UpdateInstallResult {
-                auto_installed: true,
-                message: "Update installed, restarting...".to_string(),
-            }),
-            Err(e) => {
-                println!("⚠️  Auto-install failed: {}, falling back to manual", e);
-                fallback_open_installer(&download_path);
-                Ok(UpdateInstallResult {
-                    auto_installed: false,
-                    message: format!(
-                        "Auto-install failed ({}). Installer opened, please install manually.",
-                        e
-                    ),
-                })
-            }
-        };
-    }
-
-    Err(format!("Download failed after 3 attempts: {}", last_err))
-}
-
 fn format_err(e: &reqwest::Error) -> String {
     if e.is_timeout() {
         "Connection timed out".to_string()
@@ -907,11 +755,40 @@ fn format_err(e: &reqwest::Error) -> String {
 /// Tauri command: clean up and restart app to apply update
 #[tauri::command]
 pub async fn restart_for_update(app_handle: tauri::AppHandle) -> Result<(), String> {
+    crate::panic_guard::catch_unwind_future_result(
+        "restart_for_update",
+        restart_for_update_impl(app_handle),
+    )
+    .await
+}
+
+/// Tauri command: restart the application
+#[tauri::command]
+pub async fn restart_app(app_handle: tauri::AppHandle) -> Result<(), String> {
+    crate::panic_guard::catch_unwind_future_result(
+        "restart_app",
+        restart_for_update_impl(app_handle),
+    )
+    .await
+}
+
+async fn restart_for_update_impl(app_handle: tauri::AppHandle) -> Result<(), String> {
     let relaunch_path = get_app_relaunch_path();
+
+    // Run blocking operations in spawn_blocking to avoid tokio runtime conflict
+    tokio::task::spawn_blocking(|| {
+        crate::js_scheduler::stop_js_scheduler();
+    })
+    .await
+    .map_err(|e| format!("stop_js_scheduler failed: {}", e))?;
 
     // Clean up Node.js child process
     #[cfg(not(debug_assertions))]
-    crate::node::cleanup_nodejs_process();
+    tokio::task::spawn_blocking(|| {
+        crate::node::cleanup_nodejs_process();
+    })
+    .await
+    .map_err(|e| format!("cleanup_nodejs_process failed: {}", e))?;
 
     // Relaunch the app after a short delay
     if let Some(path) = relaunch_path {

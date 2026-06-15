@@ -81,54 +81,73 @@ pub fn get_data_dir() -> PathBuf {
 }
 
 /// Token file path: ~/.openloomi/token
-pub fn get_token_path() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_default();
-    PathBuf::from(home).join(".openloomi").join("token")
+pub fn get_token_path() -> Result<PathBuf, String> {
+    #[cfg(unix)]
+    {
+        if let Ok(home) = std::env::var("HOME") {
+            return Ok(PathBuf::from(home).join(".openloomi").join("token"));
+        }
+    }
+    #[cfg(windows)]
+    {
+        if let Ok(userprofile) = std::env::var("USERPROFILE") {
+            return Ok(PathBuf::from(userprofile).join(".openloomi").join("token"));
+        }
+    }
+    Err("HOME (Unix) or USERPROFILE (Windows) is not set".to_string())
 }
 
 /// Tauri command: save token (base64-encoded to file)
 #[tauri::command]
 pub fn save_token(token: String) -> Result<(), String> {
-    let path = get_token_path();
-    let dir = path.parent().unwrap();
-    std::fs::create_dir_all(dir).map_err(|e| format!("Failed to create dir: {}", e))?;
+    crate::panic_guard::catch_unwind_result("save_token", || {
+        let path = get_token_path()?;
+        let dir = path
+            .parent()
+            .ok_or_else(|| "Token path has no parent directory".to_string())?;
+        std::fs::create_dir_all(dir).map_err(|e| format!("Failed to create dir: {}", e))?;
 
-    let encoded = base64::engine::general_purpose::STANDARD.encode(&token);
-    std::fs::write(&path, &encoded).map_err(|e| format!("Failed to write token: {}", e))?;
+        let encoded = base64::engine::general_purpose::STANDARD.encode(&token);
+        std::fs::write(&path, &encoded).map_err(|e| format!("Failed to write token: {}", e))?;
 
-    // Set file permissions to 600 on Unix
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let perms = std::fs::Permissions::from_mode(0o600);
-        let _ = std::fs::set_permissions(&path, perms);
-    }
+        // Set file permissions to 600 on Unix
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let perms = std::fs::Permissions::from_mode(0o600);
+            let _ = std::fs::set_permissions(&path, perms);
+        }
 
-    println!("[TokenFile] Token saved to {}", path.display());
-    Ok(())
+        println!("[TokenFile] Token saved to {}", path.display());
+        Ok(())
+    })
 }
 
 /// Tauri command: load token (base64-decoded)
 #[tauri::command]
 pub fn load_token() -> Result<Option<String>, String> {
-    let path = get_token_path();
-    if !path.exists() {
-        return Ok(None);
-    }
-    let encoded =
-        std::fs::read_to_string(&path).map_err(|e| format!("Failed to read token: {}", e))?;
-    let decoded = base64::engine::general_purpose::STANDARD
-        .decode(encoded.trim())
-        .map_err(|e| format!("Failed to decode token: {}", e))?;
-    let token = String::from_utf8(decoded).map_err(|e| format!("Invalid token: {}", e))?;
-    Ok(Some(token))
+    crate::panic_guard::catch_unwind_result("load_token", || {
+        let path = get_token_path()?;
+        if !path.exists() {
+            return Ok(None);
+        }
+        let encoded =
+            std::fs::read_to_string(&path).map_err(|e| format!("Failed to read token: {}", e))?;
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(encoded.trim())
+            .map_err(|e| format!("Failed to decode token: {}", e))?;
+        let token = String::from_utf8(decoded).map_err(|e| format!("Invalid token: {}", e))?;
+        Ok(Some(token))
+    })
 }
 
 /// Tauri command: delete token
 #[tauri::command]
 pub fn delete_token() -> Result<(), String> {
-    let path = get_token_path();
-    let _ = std::fs::remove_file(&path);
-    println!("[TokenFile] Token deleted");
-    Ok(())
+    crate::panic_guard::catch_unwind_result("delete_token", || {
+        let path = get_token_path()?;
+        let _ = std::fs::remove_file(&path);
+        println!("[TokenFile] Token deleted");
+        Ok(())
+    })
 }
