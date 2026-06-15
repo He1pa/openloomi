@@ -15,6 +15,12 @@ export const isTauri = () => {
   return typeof window !== "undefined" && "__TAURI__" in window;
 };
 
+function resolveBrowserUrl(url: string) {
+  if (/^[a-zA-Z][a-zA-Z\d+.-]*:/.test(url)) return url;
+  if (typeof window === "undefined") return url;
+  return new URL(url, window.location.origin).toString();
+}
+
 /**
  * Get data directory path
  */
@@ -111,12 +117,13 @@ export const openDevTools = async () => {
  */
 export const openUrl = async (url: string) => {
   if (isTauri()) {
+    const browserUrl = resolveBrowserUrl(url);
     // Tauri Webview environment - use custom commands
     try {
-      await invoke("open_url_custom", { url });
+      await invoke("open_url_custom", { url: browserUrl });
     } catch (error) {
       console.error("Failed to open URL with Tauri:", error);
-      window.open(url, "_blank");
+      window.open(browserUrl, "_blank");
     }
   } else if (typeof window !== "undefined") {
     // Browser environment
@@ -309,6 +316,25 @@ export const revealItemInDir = async (path: string): Promise<boolean> => {
 };
 
 /**
+ * Copy a file to the system clipboard as a native file reference.
+ * On macOS, writes a public.file-url UTI to the pasteboard, matching
+ * Finder's ⌘C behavior.  Works for all file types (PPTX, DOCX, PDF, etc.).
+ * Returns true on success, false if not in Tauri or on failure.
+ */
+export const copyFileToClipboard = async (path: string): Promise<boolean> => {
+  if (!isTauri()) {
+    return false;
+  }
+  try {
+    await invoke("copy_file_to_clipboard", { path });
+    return true;
+  } catch (error) {
+    console.error("Failed to copy file to clipboard:", error);
+    return false;
+  }
+};
+
+/**
  * Get home directory path
  */
 export const homeDirCustom = async (): Promise<string | null> => {
@@ -339,6 +365,57 @@ export const getPlatform = () => {
   // Browser environment
   return "browser";
 };
+
+/**
+ * Host operating system as reported by the Tauri runtime.
+ * `null` while the platform is being resolved or when not running in Tauri.
+ */
+export type DesktopOS = "macos" | "windows" | "linux" | "browser";
+
+let cachedOS: DesktopOS | null = null;
+let osPromise: Promise<DesktopOS> | null = null;
+
+/**
+ * Resolve the host OS. Safe to call from any context — returns `"browser"`
+ * outside of Tauri and caches the result so subsequent calls are synchronous.
+ *
+ * The value comes from the `get_host_os` Rust command (see
+ * `apps/web/src-tauri/src/system.rs`), which uses `cfg!(target_os = ...)` to
+ * report `"macos" | "windows" | "linux" | "other"`.
+ */
+export function getOS(): Promise<DesktopOS> {
+  if (cachedOS) return Promise.resolve(cachedOS);
+  if (osPromise) return osPromise;
+
+  osPromise = (async () => {
+    if (typeof window === "undefined" || !isTauri()) {
+      cachedOS = "browser";
+      return cachedOS;
+    }
+    try {
+      const value = await invoke<string>("get_host_os");
+      if (value === "macos" || value === "windows" || value === "linux") {
+        cachedOS = value;
+      } else {
+        cachedOS = "browser";
+      }
+    } catch (error) {
+      console.error("Failed to detect host OS:", error);
+      cachedOS = "browser";
+    }
+    return cachedOS;
+  })();
+
+  return osPromise;
+}
+
+/**
+ * Read the cached OS synchronously. Returns `null` if detection has not yet
+ * completed (first render before the async resolve).
+ */
+export function getCachedOS(): DesktopOS | null {
+  return cachedOS;
+}
 
 // ============ Auto Update ============
 
@@ -440,28 +517,6 @@ export const finishUpdateDownload =
       throw error;
     }
   };
-
-/**
- * Download and auto install update
- */
-export const downloadAndInstallUpdate = async (
-  downloadUrl: string,
-  fileSize: number,
-): Promise<UpdateInstallResult | null> => {
-  if (!isTauri()) {
-    return null;
-  }
-  try {
-    return await invoke<UpdateInstallResult>("download_and_install_update", {
-      downloadUrl,
-      fileSize,
-    });
-  } catch (error) {
-    console.error("Failed to download and install update:", error);
-    throw error;
-  }
-};
-
 /**
  * Restart application to complete update
  */
@@ -473,6 +528,20 @@ export const restartForUpdate = async (): Promise<void> => {
     await invoke("restart_for_update");
   } catch (error) {
     console.error("Failed to restart for update:", error);
+  }
+};
+
+/**
+ * Restart the application
+ */
+export const restartApp = async (): Promise<void> => {
+  if (!isTauri()) {
+    return;
+  }
+  try {
+    await invoke("restart_app");
+  } catch (error) {
+    console.error("Failed to restart app:", error);
   }
 };
 
@@ -650,14 +719,15 @@ export const tauriApi = {
   readTextFileCustom,
   removeFileCustom,
   revealItemInDir,
+  copyFileToClipboard,
   homeDirCustom,
   getPlatform,
   // Server status
   getServerStatus,
   restartServer,
   checkForUpdate,
-  downloadAndInstallUpdate,
   restartForUpdate,
+  restartApp,
   // Render engine
   getRenderEngineStatus,
   // Notification

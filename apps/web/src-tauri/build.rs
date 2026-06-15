@@ -4,7 +4,11 @@
 use std::process::Command;
 
 fn main() {
-    if std::env::var("SKIP_RENDER_ENGINE_PREFLIGHT").ok().as_deref() != Some("true") {
+    if std::env::var("SKIP_RENDER_ENGINE_PREFLIGHT")
+        .ok()
+        .as_deref()
+        != Some("true")
+    {
         let profile = std::env::var("PROFILE").unwrap_or_default();
         if profile == "release" {
             let status = Command::new("node")
