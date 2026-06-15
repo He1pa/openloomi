@@ -103,11 +103,16 @@ async function requestAuthorizationUrl(
     throw new Error("OAuth flow is only available in the browser");
   }
 
+  const headers: HeadersInit = {
+    "Content-Type": "application/json",
+  };
+  if (options.token) {
+    headers.Authorization = `Bearer ${options.token}`;
+  }
+
   const response = await fetch(endpoint, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
+    headers,
     credentials: "include",
     body: JSON.stringify({
       redirectPath,
@@ -269,12 +274,13 @@ export async function getHubspotAuthorizationUrl(
 }
 
 export async function getGoogleDocsAuthorizationUrl(
+  token?: string,
   options: { pendingId?: string } = {},
 ): Promise<string> {
   return requestAuthorizationUrl(
     "/api/google-docs/oauth",
-    "/google-docs-authorized",
-    { pendingId: options.pendingId },
+    "/api/google-docs/callback",
+    { token, pendingId: options.pendingId },
   );
 }
 
@@ -285,6 +291,50 @@ export async function getOutlookCalendarAuthorizationUrl(
     "/api/outlook-calendar/oauth",
     "/outlook-calendar-authorized",
     { pendingId: options.pendingId },
+  );
+}
+
+export async function getGoogleDriveAuthorizationUrl(
+  token?: string,
+  options: { pendingId?: string } = {},
+): Promise<string> {
+  return requestAuthorizationUrl(
+    "/api/google-drive/oauth",
+    "/api/google-drive/callback",
+    { token, pendingId: options.pendingId },
+  );
+}
+
+export async function getGoogleCalendarAuthorizationUrl(
+  token?: string,
+  options: { pendingId?: string } = {},
+): Promise<string> {
+  return requestAuthorizationUrl(
+    "/api/google-calendar/oauth",
+    "/api/google-calendar/callback",
+    { token, pendingId: options.pendingId },
+  );
+}
+
+export async function getGoogleMeetAuthorizationUrl(
+  token?: string,
+  options: { pendingId?: string } = {},
+): Promise<string> {
+  return requestAuthorizationUrl(
+    "/api/google-meet/oauth",
+    "/api/google-meet/callback",
+    { token, pendingId: options.pendingId },
+  );
+}
+
+export async function getGmailAuthorizationUrl(
+  token?: string,
+  options: { pendingId?: string } = {},
+): Promise<string> {
+  return requestAuthorizationUrl(
+    "/api/integrations/gmail/oauth/start",
+    "/api/gmail/callback",
+    { token, pendingId: options.pendingId },
   );
 }
 
@@ -433,9 +483,40 @@ export async function exchangeGoogleDocsAuthorizationCode(
   code: string,
   state: string,
 ): Promise<GoogleDocsExchangeResponse> {
+  if (isTauri()) {
+    // Tauri local version: call cloud public exchange API (no auth required)
+    const cloudUrl =
+      (typeof process !== "undefined" &&
+        process.env?.NEXT_PUBLIC_CLOUD_API_URL) ||
+      "https://app.openloomi.ai";
+
+    const response = await fetch(
+      `${cloudUrl}/api/integrations/google-docs/oauth/exchange`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ code, state }),
+      },
+    );
+
+    if (!response.ok) {
+      const error = (await response
+        .json()
+        .catch(() => ({ error: "Failed to exchange code" }))) as {
+        error?: string;
+      };
+      throw new Error(error.error || "Failed to exchange authorization code");
+    }
+
+    return (await response.json()) as GoogleDocsExchangeResponse;
+  }
+
+  // Web version: keep original logic
   return exchangeAuthorizationCode<GoogleDocsExchangeResponse>(
     "/api/google-docs/callback",
-    "/google-docs-authorized",
+    "/api/google-docs/callback",
     code,
     state,
   );
