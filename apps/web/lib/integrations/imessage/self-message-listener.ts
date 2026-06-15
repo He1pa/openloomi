@@ -24,6 +24,8 @@ import { handleAgentRuntime } from "./handlers";
 import { IMessageConversationStore } from "@openloomi/integrations/imessage/conversation-store";
 import { getAppMemoryDir } from "@/lib/utils/path";
 import { createTaskSession } from "@/lib/files/workspace/sessions";
+import { getUserInsightSettings } from "@/lib/db/queries";
+import { resolveAgentLanguage } from "@/lib/insights/resolve-language";
 
 // Singleton instance for iMessage conversation history
 const imessageConversationStore = new IMessageConversationStore(
@@ -937,6 +939,11 @@ end tell`;
           ? "(Image attachment)"
           : "(Attachment)";
 
+    const insightSettings = await getUserInsightSettings(this.userId).catch(
+      () => null,
+    );
+    const userLanguage = resolveAgentLanguage(insightSettings);
+
     // Add modelConfig for API configuration (needed in Tauri mode)
     const runtimeOptions: Parameters<typeof handleAgentRuntime>[1] = {
       conversation: conversationHistory,
@@ -944,6 +951,7 @@ end tell`;
       userId: this.userId,
       accountId: "self", // Account ID for per-day file persistence
       workDir,
+      language: userLanguage,
     };
 
     // Only add modelConfig if authToken is set
