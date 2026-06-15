@@ -99,6 +99,7 @@
       "@openloomi/integrations/feishu/app-registration": ["../../packages/integrations/feishu/src/app-registration.ts"],
       "@openloomi/integrations/feishu/registration-cookie": ["../../packages/integrations/feishu/src/registration-cookie.ts"],
       "@openloomi/integrations/feishu/conversation-store": ["../../packages/integrations/feishu/src/conversation-store.ts"],
+      "@openloomi/integrations/feishu/state": ["../../packages/integrations/feishu/src/state.ts"],
       "@openloomi/integrations/jira": ["../../packages/integrations/jira/src/index.ts"],
       "@openloomi/integrations/facebook-messenger": ["../../packages/integrations/facebook-messenger/src/index.ts"],
       "@openloomi/integrations/dingtalk": ["../../packages/integrations/dingtalk/src/index.ts"],
