@@ -1,5 +1,5 @@
 import { ImapFlow } from "imapflow";
-import type { ImapFlowOptions } from "imapflow";
+import type { ImapFlowOptions, ListResponse, MailboxObject } from "imapflow";
 import { createTransport } from "nodemailer";
 import type { SentMessageInfo } from "nodemailer";
 import type { Attachment as NodemailerAttachment } from "nodemailer/lib/mailer";
@@ -20,6 +20,11 @@ import type { Attachment } from "@openloomi/shared";
 import { ingestAttachmentForUser } from "@/lib/integrations/utils/attachments";
 import type { UserType } from "@/app/(auth)/auth";
 import {
+  formatTimingError,
+  shouldLogTimingEvent,
+} from "@/lib/insights/refresh-telemetry";
+import { createLogger } from "@/lib/utils/logger";
+import {
   cleanEmailForLLM,
   buildSnippet,
   cleanupMarkdown,
@@ -33,7 +38,76 @@ export {
 } from "@openloomi/integrations/utils";
 export { isPromotionalEmail };
 
+const logger = createLogger("EmailAdapterFetch");
 const GMAIL_MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
+const UNBOUNDED_EMAIL_FETCH_MAX_RESULTS = Number.MAX_SAFE_INTEGER;
+const EMAIL_FETCH_BATCH_SIZE = 25;
+type EmailFetchFolder = {
+  name: string;
+  isSent: boolean;
+  source: "listed" | "fallback";
+  specialUse?: string;
+  exists?: number;
+  flags?: string[];
+};
+const GMAIL_FETCH_FOLDERS: Array<{ name: string; isSent: boolean }> = [
+  { name: "[Gmail]/All Mail", isSent: false },
+  { name: "[Google Mail]/All Mail", isSent: false },
+  { name: "INBOX", isSent: false },
+  { name: "[Gmail]/Sent Mail", isSent: true },
+  { name: "[Google Mail]/Sent Mail", isSent: true },
+  { name: "[Gmail]/Sent", isSent: true },
+  { name: "SENT", isSent: true },
+  { name: "Sent", isSent: true },
+  { name: "Sent Mail", isSent: true },
+];
+const DEFAULT_FETCH_FOLDERS: Array<{ name: string; isSent: boolean }> = [
+  { name: "INBOX", isSent: false },
+  { name: "Sent", isSent: true },
+  { name: "Sent Items", isSent: true },
+  { name: "SENT", isSent: true },
+];
+
+export type EmailFetchTimingEvent = {
+  phase: string;
+  status: "start" | "success" | "failure" | "skip";
+  durationMs?: number;
+  details?: Record<string, unknown>;
+  error?: unknown;
+};
+
+export type EmailFetchOptions = {
+  maxResults?: number;
+  onTiming?: (event: EmailFetchTimingEvent) => void;
+};
+
+function normalizeEmailFetchMaxResults(maxResults?: number): number {
+  if (maxResults === undefined) {
+    return UNBOUNDED_EMAIL_FETCH_MAX_RESULTS;
+  }
+  return Math.max(1, Math.floor(maxResults));
+}
+
+function formatEmailFetchMaxResults(maxResults: number): number | "unbounded" {
+  return maxResults === UNBOUNDED_EMAIL_FETCH_MAX_RESULTS
+    ? "unbounded"
+    : maxResults;
+}
+
+function takeMostRecentUids(uids: number[], maxResults: number): number[] {
+  if (maxResults === UNBOUNDED_EMAIL_FETCH_MAX_RESULTS) {
+    return [...uids].reverse();
+  }
+  return uids.slice(-maxResults).reverse();
+}
+
+function shouldLogEmailFetchTiming(event: EmailFetchTimingEvent) {
+  return shouldLogTimingEvent({
+    phase: event.phase,
+    status: event.status,
+    isSummaryPhase: (phase) => phase === "imap_fetch_emails",
+  });
+}
 
 const PROMOTIONAL_SENDER_PATTERNS = [
   /^noreply@/i,
@@ -216,6 +290,7 @@ export class EmailAdapter extends MessagePlatformAdapter {
   private ownerUserId?: string;
   private ownerUserType?: UserType;
   private parseEmailFn: typeof simpleParser;
+  private imapHost: string;
 
   /**
    * Initialize adapter
@@ -259,6 +334,7 @@ export class EmailAdapter extends MessagePlatformAdapter {
 
     const imapHost =
       opts?.imap?.host ?? process.env.EMAIL_IMAP_HOST ?? "imap.gmail.com";
+    this.imapHost = imapHost;
     const imapPort = Number(
       opts?.imap?.port ?? process.env.EMAIL_IMAP_PORT ?? 993,
     );
@@ -304,6 +380,48 @@ export class EmailAdapter extends MessagePlatformAdapter {
     });
   }
 
+  private emitFetchTiming(
+    onTiming: EmailFetchOptions["onTiming"] | undefined,
+    phase: string,
+    status: EmailFetchTimingEvent["status"],
+    details?: Record<string, unknown>,
+    startedAt?: number,
+    error?: unknown,
+  ) {
+    const event: EmailFetchTimingEvent = {
+      phase,
+      status,
+      durationMs: startedAt ? Date.now() - startedAt : undefined,
+      details,
+      error,
+    };
+    onTiming?.(event);
+
+    if (!shouldLogEmailFetchTiming(event)) {
+      return;
+    }
+
+    const payload = {
+      phase,
+      status,
+      durationMs: event.durationMs,
+      botId: this.botId,
+      platform: this.isGmailHost() ? "gmail" : "email",
+      ...details,
+      ...(error === undefined ? {} : { error: formatTimingError(error) }),
+    };
+    const line = JSON.stringify(payload);
+    if (status === "failure") {
+      logger.error(line);
+      return;
+    }
+    if (status === "skip") {
+      logger.warn(line);
+      return;
+    }
+    logger.info(line);
+  }
+
   /**
    * Get emails by days (e.g., 1 = last 1 day)
    */
@@ -326,30 +444,117 @@ export class EmailAdapter extends MessagePlatformAdapter {
    * Get emails by timestamp (get emails after specified time)
    * @param since - Start time (Date object)
    */
-  async getEmailsByTime(since: Date) {
+  async getEmailsByTime(since: Date, options: EmailFetchOptions = {}) {
+    const maxResults = normalizeEmailFetchMaxResults(options.maxResults);
+    const maxResultsForLog = formatEmailFetchMaxResults(maxResults);
+    const startedAt = Date.now();
     try {
       // Ensure IMAP is connected
+      this.emitFetchTiming(options.onTiming, "imap_connect", "start", {
+        host: this.imapHost,
+        since: since.toISOString(),
+        maxResults: maxResultsForLog,
+      });
       await this.client.connect();
-
-      // Fetch emails from INBOX
-      const inboxResults = await this.fetchEmailsFromFolder(
-        "INBOX",
-        false,
-        since,
+      this.emitFetchTiming(
+        options.onTiming,
+        "imap_connect",
+        "success",
+        {
+          host: this.imapHost,
+          since: since.toISOString(),
+          maxResults: maxResultsForLog,
+          capabilities: this.getSafeCapabilities(),
+        },
+        startedAt,
       );
 
-      // Fetch emails from SENT folder (try different folder names for compatibility)
-      const sentFolders = ["SENT", "[Gmail]/Sent"];
-      let sentResults: ExtractEmailInfo[] = [];
-      for (const folder of sentFolders) {
+      const folders = await this.resolveFetchFolders({
+        onTiming: options.onTiming,
+      });
+      const dedupedEmails = new Map<string, ExtractEmailInfo>();
+
+      for (const folder of folders) {
+        if (dedupedEmails.size >= maxResults) {
+          break;
+        }
+        const remaining = maxResults - dedupedEmails.size;
         try {
-          sentResults = await this.fetchEmailsFromFolder(folder, true, since);
-          if (sentResults.length > 0) break;
-        } catch {}
+          const folderResults = await this.fetchEmailsFromFolder(
+            folder.name,
+            folder.isSent,
+            since,
+            {
+              maxResults: remaining,
+              useGmailRawSearch: this.isGmailHost(),
+              onTiming: options.onTiming,
+            },
+          );
+          for (const email of folderResults) {
+            const key = this.getEmailDedupeKey(email);
+            if (!dedupedEmails.has(key)) {
+              dedupedEmails.set(key, email);
+            } else if (email.isSent) {
+              dedupedEmails.set(key, {
+                ...dedupedEmails.get(key),
+                ...email,
+                isSent: true,
+              });
+            }
+          }
+        } catch (error) {
+          this.emitFetchTiming(
+            options.onTiming,
+            "imap_folder_skip",
+            "skip",
+            {
+              folder: folder.name,
+              isSent: folder.isSent,
+              folderSource: folder.source,
+              specialUse: folder.specialUse,
+              reason: "folder_unavailable_or_search_failed",
+            },
+            undefined,
+            error,
+          );
+        }
       }
 
-      return [...inboxResults, ...sentResults];
+      const results = Array.from(dedupedEmails.values())
+        .sort((a, b) => b.timestamp - a.timestamp)
+        .slice(0, maxResults);
+      this.emitFetchTiming(
+        options.onTiming,
+        "imap_fetch_emails",
+        "success",
+        {
+          since: since.toISOString(),
+          resultCount: results.length,
+          maxResults: maxResultsForLog,
+          folderCount: folders.length,
+          folders: folders.map((folder) => ({
+            name: folder.name,
+            isSent: folder.isSent,
+            source: folder.source,
+            specialUse: folder.specialUse,
+            exists: folder.exists,
+          })),
+        },
+        startedAt,
+      );
+      return results;
     } catch (error) {
+      this.emitFetchTiming(
+        options.onTiming,
+        "imap_fetch_emails",
+        "failure",
+        {
+          since: since.toISOString(),
+          maxResults: maxResultsForLog,
+        },
+        startedAt,
+        error,
+      );
       console.error(`[Bot ${this.botId}] [gmail] failed:`, error);
       throw new Error(`Get email failed: ${(error as Error).message}`);
     }
@@ -365,40 +570,374 @@ export class EmailAdapter extends MessagePlatformAdapter {
     folder: string,
     isSent: boolean,
     since: Date,
+    options: {
+      maxResults: number;
+      useGmailRawSearch: boolean;
+      onTiming?: (event: EmailFetchTimingEvent) => void;
+    },
   ): Promise<ExtractEmailInfo[]> {
-    // Open mailbox
-    const mailbox = await this.client.mailboxOpen(folder);
+    const folderStartedAt = Date.now();
+    this.emitFetchTiming(options.onTiming, "imap_folder_open", "start", {
+      folder,
+      isSent,
+    });
+    let mailbox: MailboxObject;
+    try {
+      mailbox = await this.client.mailboxOpen(folder);
+    } catch (error) {
+      this.emitFetchTiming(
+        options.onTiming,
+        "imap_folder_open",
+        "failure",
+        { folder, isSent },
+        folderStartedAt,
+        error,
+      );
+      throw error;
+    }
     if (!mailbox) throw new Error(`Cannot open ${folder}`);
+    this.emitFetchTiming(
+      options.onTiming,
+      "imap_folder_open",
+      "success",
+      {
+        folder,
+        isSent,
+        exists: mailbox.exists,
+      },
+      folderStartedAt,
+    );
 
-    const emailUids = await this.client.search({ since });
-    const results: ExtractEmailInfo[] = [];
-    if (emailUids) {
-      for (const uid of emailUids) {
-        const msg = await this.client.fetchOne(uid, {
-          envelope: true,
-          bodyStructure: true,
-          source: true,
-        });
-        if (msg) {
-          if (msg.source) {
-            const parsed = await this.parseEmailFn(msg.source);
-            if (parsed.date && parsed.date >= since) {
-              if (isPromotionalEmail(parsed)) {
-                continue;
-              }
-              const email = this.formatEmail(parsed, uid, isSent);
-              const attachments = await this.ingestEmailAttachments(email);
-              results.push({
-                ...email,
-                attachments,
-              });
-            }
+    try {
+      const searchStartedAt = Date.now();
+      const searchResult = await this.searchEmailUids(folder, since, options);
+      this.emitFetchTiming(
+        options.onTiming,
+        "imap_folder_search",
+        "success",
+        {
+          folder,
+          isSent,
+          strategy: searchResult.strategy,
+          query: searchResult.query,
+          fallbackReason: searchResult.fallbackReason,
+          uidCount: searchResult.uids.length,
+          since: since.toISOString(),
+        },
+        searchStartedAt,
+      );
+
+      const recentUids = takeMostRecentUids(
+        searchResult.uids,
+        options.maxResults,
+      );
+      const results: ExtractEmailInfo[] = [];
+      let promotionalCount = 0;
+      let skippedOldCount = 0;
+      let fetchedMessageCount = 0;
+      const fetchStartedAt = Date.now();
+
+      // Keep RFC822 source fetches bounded even when callers request the full
+      // time window, because each message source can be large.
+      for (
+        let offset = 0;
+        offset < recentUids.length && results.length < options.maxResults;
+        offset += EMAIL_FETCH_BATCH_SIZE
+      ) {
+        const uidBatch = recentUids.slice(
+          offset,
+          offset + EMAIL_FETCH_BATCH_SIZE,
+        );
+        const messages = await this.client.fetchAll(
+          uidBatch,
+          {
+            envelope: true,
+            bodyStructure: true,
+            source: true,
+          },
+          { uid: true },
+        );
+        fetchedMessageCount += messages.length;
+        const messagesByUid = new Map(
+          messages.map((message) => [message.uid, message] as const),
+        );
+
+        for (const uid of uidBatch) {
+          if (results.length >= options.maxResults) break;
+          const msg = messagesByUid.get(uid);
+          if (!msg || !msg.source) {
+            continue;
           }
+
+          const parsed = await this.parseEmailFn(msg.source);
+          if (parsed.date && parsed.date < since) {
+            skippedOldCount++;
+            continue;
+          }
+          if (isPromotionalEmail(parsed)) {
+            promotionalCount++;
+            continue;
+          }
+          const email = this.formatEmail(parsed, msg.uid, isSent);
+          const attachments = await this.ingestEmailAttachments(email);
+          results.push({
+            ...email,
+            attachments,
+          });
         }
       }
+
+      this.emitFetchTiming(
+        options.onTiming,
+        "imap_folder_fetch",
+        "success",
+        {
+          folder,
+          isSent,
+          requestedUidCount: recentUids.length,
+          fetchedMessageCount,
+          resultCount: results.length,
+          skippedOldCount,
+          promotionalCount,
+          skippedPromotionalCount: promotionalCount,
+        },
+        fetchStartedAt,
+      );
+
+      return results;
+    } finally {
+      await this.client.mailboxClose();
     }
-    await this.client.mailboxClose();
-    return results;
+  }
+
+  private isGmailHost(): boolean {
+    return /(^|\.)gmail\.com$/i.test(this.imapHost);
+  }
+
+  private getSafeCapabilities(): string[] {
+    return Array.from(this.client.capabilities.keys()).filter((capability) =>
+      ["IMAP4REV1", "UIDPLUS", "X-GM-EXT-1", "XLIST", "SPECIAL-USE"].includes(
+        capability.toUpperCase(),
+      ),
+    );
+  }
+
+  private async resolveFetchFolders(options: {
+    onTiming?: (event: EmailFetchTimingEvent) => void;
+  }): Promise<EmailFetchFolder[]> {
+    const fallbackFolders = (
+      this.isGmailHost() ? GMAIL_FETCH_FOLDERS : DEFAULT_FETCH_FOLDERS
+    ).map((folder): EmailFetchFolder => ({ ...folder, source: "fallback" }));
+
+    const startedAt = Date.now();
+    this.emitFetchTiming(options.onTiming, "imap_list_mailboxes", "start", {
+      host: this.imapHost,
+    });
+    try {
+      const mailboxes = await this.client.list({
+        statusQuery: { messages: true },
+      });
+      const selected = this.selectFetchFoldersFromList(mailboxes);
+      this.emitFetchTiming(
+        options.onTiming,
+        "imap_list_mailboxes",
+        "success",
+        {
+          mailboxCount: mailboxes.length,
+          selectedFolders: selected.map((folder) => ({
+            name: folder.name,
+            isSent: folder.isSent,
+            source: folder.source,
+            specialUse: folder.specialUse,
+            exists: folder.exists,
+            flags: folder.flags,
+          })),
+          fallbackUsed: selected.length === 0,
+        },
+        startedAt,
+      );
+      return selected.length > 0 ? selected : fallbackFolders;
+    } catch (error) {
+      this.emitFetchTiming(
+        options.onTiming,
+        "imap_list_mailboxes",
+        "failure",
+        {
+          fallbackFolders: fallbackFolders.map((folder) => ({
+            name: folder.name,
+            isSent: folder.isSent,
+          })),
+        },
+        startedAt,
+        error,
+      );
+      return fallbackFolders;
+    }
+  }
+
+  private selectFetchFoldersFromList(
+    mailboxes: ListResponse[],
+  ): EmailFetchFolder[] {
+    const selectable = mailboxes.filter(
+      (mailbox) =>
+        !mailbox.flags.has("\\Noselect") && !mailbox.flags.has("\\NonExistent"),
+    );
+    const selected = new Map<string, EmailFetchFolder>();
+    const addFolder = (mailbox: ListResponse | undefined, isSent: boolean) => {
+      if (!mailbox || selected.has(mailbox.path)) return;
+      selected.set(mailbox.path, {
+        name: mailbox.path,
+        isSent,
+        source: "listed",
+        specialUse: mailbox.specialUse,
+        exists: mailbox.status?.messages,
+        flags: this.getSafeMailboxFlags(mailbox.flags),
+      });
+    };
+    const findBySpecialUse = (specialUse: string) =>
+      selectable.find((mailbox) => mailbox.specialUse === specialUse);
+    const findByPath = (predicate: (normalizedPath: string) => boolean) =>
+      selectable.find((mailbox) =>
+        predicate(this.normalizeMailboxPath(mailbox.path)),
+      );
+
+    if (this.isGmailHost()) {
+      addFolder(
+        findBySpecialUse("\\All") ??
+          findByPath(
+            (path) =>
+              path === "[gmail]/all mail" ||
+              path === "[google mail]/all mail" ||
+              path.endsWith("/all mail"),
+          ),
+        false,
+      );
+    }
+
+    addFolder(
+      findBySpecialUse("\\Inbox") ?? findByPath((path) => path === "inbox"),
+      false,
+    );
+    addFolder(
+      findBySpecialUse("\\Sent") ??
+        findByPath((path) => /(^|\/)(sent|sent mail|sent items)$/i.test(path)),
+      true,
+    );
+
+    return Array.from(selected.values());
+  }
+
+  private normalizeMailboxPath(path: string): string {
+    return path.trim().replace(/\\/g, "/").toLowerCase();
+  }
+
+  private getSafeMailboxFlags(flags: Set<string>): string[] {
+    return Array.from(flags).filter((flag) =>
+      [
+        "\\All",
+        "\\Archive",
+        "\\Inbox",
+        "\\Sent",
+        "\\Drafts",
+        "\\Junk",
+        "\\Trash",
+        "\\Noselect",
+        "\\NonExistent",
+      ].includes(flag),
+    );
+  }
+
+  private async searchEmailUids(
+    folder: string,
+    since: Date,
+    options: {
+      useGmailRawSearch: boolean;
+      maxResults: number;
+      onTiming?: (event: EmailFetchTimingEvent) => void;
+    },
+  ): Promise<{
+    uids: number[];
+    strategy: string;
+    query?: string;
+    fallbackReason?: string;
+  }> {
+    if (options.useGmailRawSearch) {
+      try {
+        const gmraw = this.buildGmailRawSearchQuery(folder, since);
+        const uids = await this.client.search({ gmraw }, { uid: true });
+        if (Array.isArray(uids) && uids.length > 0) {
+          return { uids, strategy: "gmail_raw", query: gmraw };
+        }
+        const fallback = await this.searchEmailUidsByImapSince(since);
+        return {
+          ...fallback,
+          fallbackReason: "gmail_raw_empty",
+          query: gmraw,
+        };
+      } catch (error) {
+        this.emitFetchTiming(
+          options.onTiming,
+          "imap_gmail_raw_search",
+          "skip",
+          {
+            folder,
+            reason: "gmail_raw_failed_fallback_to_imap_since",
+          },
+          undefined,
+          error,
+        );
+        const fallback = await this.searchEmailUidsByImapSince(since);
+        return {
+          ...fallback,
+          fallbackReason: "gmail_raw_failed",
+        };
+      }
+    }
+
+    return this.searchEmailUidsByImapSince(since);
+  }
+
+  private async searchEmailUidsByImapSince(
+    since: Date,
+  ): Promise<{ uids: number[]; strategy: string; query: string }> {
+    const dayStart = new Date(since);
+    dayStart.setHours(0, 0, 0, 0);
+    const uids = await this.client.search({ since: dayStart }, { uid: true });
+    return {
+      uids: Array.isArray(uids) ? uids : [],
+      strategy: "imap_since",
+      query: `SINCE ${dayStart.toISOString()}`,
+    };
+  }
+
+  private buildGmailRawSearchQuery(folder: string, since: Date): string {
+    const days = this.getGmailRawSearchWindowDays(since);
+    const parts = [`newer_than:${days}d`, "-in:spam", "-in:trash"];
+    if (this.isSentFolderName(folder)) {
+      parts.push("in:sent");
+    }
+    return parts.join(" ");
+  }
+
+  private getGmailRawSearchWindowDays(since: Date): number {
+    const diffMs = Date.now() - since.getTime();
+    const diffDays = Math.ceil(Math.max(diffMs, 0) / (24 * 60 * 60 * 1000));
+    // Gmail date operators are day-granular in practice; add one day to avoid
+    // losing boundary-day messages and filter exact timestamps after fetch.
+    return Math.max(1, diffDays + 1);
+  }
+
+  private isSentFolderName(folder: string): boolean {
+    return /(^|\/)(sent|sent mail|sent items)$/i.test(folder);
+  }
+
+  private getEmailDedupeKey(email: ExtractEmailInfo): string {
+    return [
+      email.timestamp,
+      email.from.email.toLowerCase(),
+      email.subject.trim().toLowerCase(),
+      email.snippet.trim().slice(0, 120),
+    ].join("|");
   }
 
   private formatEmail(
@@ -635,7 +1174,8 @@ export class EmailAdapter extends MessagePlatformAdapter {
       return;
     }
 
-    const fallbackBody = body.length > 0 ? body : "Image(s) attached";
+    const fallbackBody =
+      body.length > 0 ? body : "Image(s) attached via openloomi.";
 
     await this.smtpTransport.sendMail({
       from: this.gmailAddress,
