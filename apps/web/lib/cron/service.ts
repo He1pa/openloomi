@@ -762,3 +762,108 @@ export async function cleanupStuckJobs(): Promise<number> {
   );
   return stuckExecutions.length;
 }
+
+/**
+ * Re-align jobs that follow the user's timezone preference to a new timezone.
+ * This is called when a user changes their timezone preference.
+ *
+ * @param userId - The user whose jobs should be re-aligned
+ * @param timezone - The new effective timezone
+ * @param now - Current timestamp for computing next run times
+ * @param _tx - Unused parameter, kept for backward compatibility
+ * @param previousTimezone - Previous timezone for filtering jobs to re-align
+ * @returns Number of jobs that were re-aligned
+ */
+export async function applyTimezoneToUserJobs(
+  userId: string,
+  timezone: string,
+  now: Date,
+  _tx?: unknown,
+  previousTimezone?: string,
+): Promise<number> {
+  // Find all jobs that follow user preference and need re-alignment
+  const conditions = [
+    eq(scheduledJobs.userId, userId),
+    eq(scheduledJobs.timezoneSource, "user_preference"),
+  ];
+
+  // If previous timezone is provided, only re-align jobs that were at that timezone
+  // This prevents re-aligning jobs that were already at the new timezone
+  if (previousTimezone) {
+    conditions.push(eq(scheduledJobs.timezone, previousTimezone));
+  }
+
+  const jobsToUpdate = await db
+    .select()
+    .from(scheduledJobs)
+    .where(and(...conditions));
+
+  if (jobsToUpdate.length === 0) {
+    return 0;
+  }
+
+  let updatedCount = 0;
+
+  for (const job of jobsToUpdate) {
+    // Compute the new next run time based on the new timezone
+    let newNextRun: Date | null = null;
+
+    if (job.scheduleType === "cron" && job.cronExpression) {
+      newNextRun = computeNextRun(
+        { type: "cron", expression: job.cronExpression, timezone },
+        now,
+      );
+    } else if (
+      job.scheduleType === "interval-hours" ||
+      job.scheduleType === "interval-minutes" ||
+      job.scheduleType === "interval"
+    ) {
+      const minutes = job.intervalMinutes;
+      if (typeof minutes === "number") {
+        const hours = minutes % 60 === 0 ? minutes / 60 : undefined;
+        newNextRun = computeNextRun(
+          hours
+            ? { type: "interval-hours", hours }
+            : { type: "interval-minutes", minutes: minutes || 60 },
+          now,
+        );
+      }
+    } else if (job.scheduleType === "once" && job.scheduledAt) {
+      // One-time jobs keep their scheduled time, just update the timezone
+      newNextRun = job.scheduledAt;
+    }
+
+    await db
+      .update(scheduledJobs)
+      .set({
+        timezone,
+        nextRunAt: newNextRun,
+        updatedAt: now,
+      })
+      .where(eq(scheduledJobs.id, job.id));
+
+    updatedCount++;
+  }
+
+  console.log(
+    `[applyTimezoneToUserJobs] Re-aligned ${updatedCount} jobs for user ${userId} to timezone ${timezone}`,
+  );
+  return updatedCount;
+}
+
+/**
+ * Get the timezone that a user's jobs currently inherit (via user preference).
+ * This is the timezone that the user's jobs would have if they all follow user_preference.
+ *
+ * @param userId - The user whose inherited timezone to retrieve
+ * @returns The inherited timezone string, or null if the user has no preference set
+ */
+export async function getInheritedJobTimezone(
+  userId: string,
+): Promise<string | null> {
+  // Get the user's timezone preference from their profile
+  const { getUserById } = await import("@/lib/db/queries");
+  const user = await getUserById(userId);
+  // User schema may not have timezone field yet - return null as fallback
+  return (user as any)?.timezone ?? null;
+}

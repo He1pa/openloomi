@@ -5,6 +5,13 @@
 import type { ScheduledJob } from "../db/schema";
 
 /**
+ * Source of a job's timezone value.
+ * - "explicit": Job has its own timezone override (not inherited from user preference).
+ * - "user_preference": Job follows the user's timezone preference and will be re-aligned when the preference changes.
+ */
+export type JobTimezoneSource = "explicit" | "user_preference";
+
+/**
  * Schedule configuration types
  */
 export type ScheduleConfig =

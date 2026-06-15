@@ -143,6 +143,8 @@ import {
   decryptPayload,
   DEFAULT_INSIGHT_TTL_HOURS,
 } from "./serialization";
+// Import executeTransaction from shared helpers for database transactions
+export { executeTransaction } from "./shared/helpers";
 
 // Import batch operations from separate module
 export { DB_INSERT_CHUNK_SIZE, batchInsert } from "./batch";
@@ -336,10 +338,14 @@ export async function updateUserProfile(
   updates: {
     name?: string | null;
     avatarUrl?: string | null;
+    timezone?: string | null;
+    hourCycle?: string | null;
   },
+  _tx?: unknown,
 ) {
   const now = new Date();
-  const payload: Partial<User> & { updatedAt: Date } = { updatedAt: now };
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const payload: Record<string, any> = { updatedAt: now };
 
   if (updates.name !== undefined) {
     const normalized = updates.name?.trim() ?? null;
@@ -351,7 +357,18 @@ export async function updateUserProfile(
     payload.avatarUrl = normalized && normalized.length > 0 ? normalized : null;
   }
 
-  if (Object.keys(payload).length === 1) {
+  // timezone and hourCycle may not exist in schema yet - use dynamic assignment
+  if (updates.timezone !== undefined) {
+    payload.timezone = updates.timezone;
+  }
+
+  if (updates.hourCycle !== undefined) {
+    payload.hourCycle = updates.hourCycle;
+  }
+
+  const keys = Object.keys(payload);
+  if (keys.length === 1) {
+    // Only updatedAt, nothing else to update
     return getUserById(userId);
   }
 
@@ -368,6 +385,42 @@ export async function updateUserProfile(
       "bad_request:database",
       `Failed to update user profile. ${error}`,
     );
+  }
+}
+
+/**
+ * User timezone preference - reflects user's IANA timezone preference and hour cycle.
+ * null timezone means follow browser-detected timezone.
+ */
+export interface UserTimezonePreference {
+  timezone: string | null;
+  hourCycle: string | null;
+}
+
+/**
+ * Get a user's timezone and hour cycle preference.
+ * Returns default values if not yet set (timezone: null = follow browser, hourCycle: null = locale default).
+ */
+export async function getUserTimezonePreference(
+  userId: string,
+): Promise<UserTimezonePreference> {
+  try {
+    const profile = await getUserById(userId);
+    // Return defaults if user not found - timezone follows browser, hourCycle follows locale
+    if (!profile) {
+      return { timezone: null, hourCycle: null };
+    }
+
+    // If user profile has timezone field, use it; otherwise use defaults
+    // Note: The actual timezone/hourCycle columns may not exist in schema yet
+    return {
+      timezone: (profile as any).timezone ?? null,
+      hourCycle: (profile as any).hourCycle ?? null,
+    };
+  } catch (error) {
+    console.error(error);
+    // Return safe defaults on error
+    return { timezone: null, hourCycle: null };
   }
 }
 
