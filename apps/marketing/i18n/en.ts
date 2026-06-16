@@ -41,7 +41,8 @@ export const en = {
   },
   howItWorks: {
     eyebrow: "02 — How It Works",
-    heading: "Your AI finally sees the full picture.",
+    heading: "Your AI finally sees",
+    headingAccent: "the full picture.",
     description:
       "OpenLoomi connects across Slack, email, calendar, docs, and more — not to archive, but to understand. It builds a living picture of your work: who matters, what's at stake, and what needs to move forward.",
     quote: "Not because you asked. Because it already knows.",
