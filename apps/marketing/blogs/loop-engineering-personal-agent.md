@@ -17,7 +17,7 @@ The reality is, that discussion's conclusion directly shaped our technical direc
 
 ## Loop Engineering Isn't "Repetition" — It's "Evolution"
 
-In the AI Agent world, a Loop is typically understood as:感知 → 推理 → 行动 → 反馈 → 感知 again. It's been equipped with goal setting, heartbeat mechanisms, scheduled tasks, connectors, and memory.
+In the AI Agent world, a Loop is typically understood as: perception → reasoning → action → feedback → perception again. It's been equipped with goal setting, heartbeat mechanisms, scheduled tasks, connectors, and memory.
 
 But most AI products handle Loops by **starting fresh every time.** The conclusions from the last conversation don't automatically become the basis for the next round of reasoning. You think you're in a "continuous collaboration," but the AI is actually starting from scratch every single time.
 
