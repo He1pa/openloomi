@@ -29,8 +29,6 @@ We call this the **context graph**. Building it was only half the battle. The ot
 
 ![Context Window vs Persistent Memory](/img/blogs/agent-memory-evaluation-lessons-learned/context-window.png)
 
-OpenLoomi is the open-source Harness engine. Alloomi is the commercial product built on top, serving professional teams and SMBs in sales, legal, and other domains.
-
 ---
 
 ## Four Things We Didn't Expect
@@ -89,8 +87,6 @@ When you ask "what was the feedback on the API redesign?", the context graph doe
 
 The difference between a history list and a historical state snapshot is the difference between archaeology and time travel.
 
-We built two types: a **code context graph** covering timeline, spatial dimensions, global/local preferences, structured code, GitHub Issue/Kanban, Git History, and coding patterns; and a **content context graph** covering timeline, spatial dimensions, global/local preferences, immutable raw context, structured insights, relationship graph, and self-evolving memory.
-
 ### Hebbian Memory Connections
 
 Inspired by Hebbian theory — "neurons that fire together wire together" — we built associative memory links that strengthen based on co-occurrence.
@@ -136,10 +132,6 @@ We assessed four dimensions: **Accuracy** (how well answers match facts, using F
 ### LoCoMo
 
 LoCoMo from Stony Brook University contains real conversation records with observations, summaries, and QA pairs. Question categories include single_hop (single memory retrieval), temporal (date/time reasoning), multi_hop (cross-session multi-step reasoning), and open_domain (open-domain Q&A).
-
-**End-to-end accuracy: ~96%**
-
-Performance on par with SOTA: agentmemory, mempalace, and other leading open-source memory projects.
 
 ### LongMemEval-S
 
