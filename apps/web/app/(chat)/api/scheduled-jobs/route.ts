@@ -139,7 +139,10 @@ export async function POST(request: Request) {
           };
         }
       } catch (error) {
-        console.warn("[ScheduledJobs] Failed to fetch user API settings:", error);
+        console.warn(
+          "[ScheduledJobs] Failed to fetch user API settings:",
+          error,
+        );
       }
     }
 

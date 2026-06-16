@@ -173,9 +173,33 @@ export async function DELETE(
 ) {
   const { accountId } = await params;
 
-  // Tauri mode: forward directly to cloud for authentication
+  // Tauri mode: delete from local only (no cloud call needed)
   if (isTauriMode()) {
-    return await handleDeleteCloud(request, accountId);
+    // Authentication check (supports Bearer Token and Session)
+    const user = await authenticateCloudRequest(request);
+
+    if (!user) {
+      return NextResponse.json(
+        { error: "Unauthorized", message: "You must be logged in" },
+        { status: 401 },
+      );
+    }
+
+    try {
+      return await handleDeleteLocal(accountId, user.id);
+    } catch (error) {
+      if (error instanceof AppError) {
+        return error.toResponse();
+      }
+      console.error(
+        `[IntegrationAccounts] Failed to delete account ${accountId} in local mode`,
+        error,
+      );
+      return NextResponse.json(
+        { error: "Failed to delete integration account" },
+        { status: 500 },
+      );
+    }
   }
 
   // Cloud mode: local authentication check required
